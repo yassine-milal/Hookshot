@@ -505,9 +505,13 @@ Shader::Profile make_profile() {
     p.supported_spirv = 0x00010600;
     p.unified_descriptor_binding = true;
     p.support_descriptor_aliasing = true;
-    p.support_int8 = p.support_int16 = p.support_int64 = true;
-    p.support_uniform_and_storage_buffer_8bit = p.support_storage_buffer_8bit = true;
-    p.support_uniform_and_storage_buffer_16bit = p.support_storage_buffer_16bit = true;
+    p.support_int8 = dev.vk12.shaderInt8;
+    p.support_int16 = dev.features.shaderInt16;
+    p.support_int64 = true;
+    p.support_uniform_and_storage_buffer_8bit = dev.vk12.uniformAndStorageBuffer8BitAccess;
+    p.support_storage_buffer_8bit = dev.vk12.storageBuffer8BitAccess;
+    p.support_uniform_and_storage_buffer_16bit = dev.vk11.uniformAndStorageBuffer16BitAccess;
+    p.support_storage_buffer_16bit = dev.vk11.storageBuffer16BitAccess;
     p.support_vertex_instance_id = false;
     p.support_float_controls = true;
     p.support_separate_denorm_behavior = p.support_separate_rounding_mode = true;
