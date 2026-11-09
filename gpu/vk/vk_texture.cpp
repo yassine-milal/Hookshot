@@ -1662,12 +1662,19 @@ void forget_gpu(Texture* tex) {
         }
 }
 
+// (hookshot, after RufflezAU's wall-clock eviction in issue 595) the time in ms, for a texture's age
+static uint64_t tex_now_ms() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 /// (as_target: texture_get's for a render target or a copy's destination, not for sampling: its image goes to the render targets'
 /// blocks, and to the target pool when its texture goes)
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
+    x.last_ms = tex_now_ms();
     x.gpu = t->gpu, x.d = t->d, x.L = t->L, x.nvn_format = t->d.format;
     x.guest = host->gpu_guest(t->gpu);
     x.guest_size = t->L.size;
@@ -2203,6 +2210,7 @@ bool upload_defer(const Texture& tex) {
 }  // namespace
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
+    tex->last_ms = tex_now_ms();
     tex->last_value = rec_value;
     if (!for_sampling) return tex;
     if (upload_defer(*tex)) return nullptr;
@@ -2937,6 +2945,7 @@ void texture_written(Texture* tex) {
 
 bool texture_touch_quick(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
+    tex->last_ms = tex_now_ms();
     tex->last_value = rec_value;
     if (!for_sampling) return true;
     if (tex->gpu_written && !tex->released && !tex->only_cleared) return true;
@@ -3585,6 +3594,18 @@ void texture_frame(uint64_t completed) {
              (unsigned long long)(finalized_kept >> 10), n ? line : "");
     }
     const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
+    // (hookshot, after RufflezAU's wall-clock eviction, issue 595) an age counted in presents only: at 60 fps 60 presents are a
+    // second, at the 1-5 fps of an overloaded GPU they are 12-60 s, so the textures grew far past the budget between sweeps, VRAM
+    // went over what the driver allows, it paged, the frames got slower and the eviction slower still. Old enough now: that many
+    // presents, or as much time as they take at 60 fps once it is two presents unused (in use, however long a frame takes)
+    const uint64_t now_ms = tex_now_ms();
+    static const bool by_time = !getenv("RX_VK_EVICT_BY_TIME") || atoi(getenv("RX_VK_EVICT_BY_TIME")) != 0;
+    const auto older = [&](uint64_t last, const Texture* t, uint64_t presents) {
+        const uint64_t frames = frame_no - last;
+        if (frames >= presents) return true;
+        if (!by_time || frames < 2) return false;
+        return now_ms - t->last_ms >= presents * 1000 / 60;
+    };
     const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
     static uint64_t n_dead, b_dead, dead_logged_at;
     // (hookshot) the textures to go are chosen first and destroyed after; the write-backs among them go to the GPU in a few
@@ -3595,9 +3616,9 @@ void texture_frame(uint64_t completed) {
     for (auto& [last, tex] : order) {
         // (total_bytes can have drifted below the textures' sum (destroy_later clamps it): the chosen ones' bytes past it mean the
         // budget is met, not a wrapped difference that never is)
-        if ((!sweep && (pending_bytes >= total_bytes || total_bytes - pending_bytes <= budget / 8 * 7)) || frame_no - last < need_dead) break;
+        if ((!sweep && (pending_bytes >= total_bytes || total_bytes - pending_bytes <= budget / 8 * 7)) || !older(last, tex, need_dead)) break;
         const bool shifted = drawn_over_shifted(tex);
-        if (frame_no - last < need_unused && !shifted) continue;   // (younger: only a dead transient target goes)
+        if (!older(last, tex, need_unused) && !shifted) continue;   // (younger: only a dead transient target goes)
         if (tex->last_value > completed) continue;
         // (nor what the GPU wrote and the game still has: the image is its only copy, and one made again over that
         // storage started empty or from stale memory: a sky or course texture drawn once, garbage from then on.
@@ -3620,7 +3641,7 @@ void texture_frame(uint64_t completed) {
                      (unsigned long long)(keep_finalized_max >> 20), tex->id, (unsigned long long)tex->gpu, tex->width,
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
-        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && frame_no - last < keep_rendered) continue;
+        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && !older(last, tex, keep_rendered)) continue;
         if (sweep && !overwritten) continue;
         // (hookshot) nor a live texture the GPU drew whose texels cannot be written back into its memory (ASTC kept as BC3, sparse,
         // past the write-back's size, ...): its image is the only copy, and one made again over that storage is not uploaded (the
