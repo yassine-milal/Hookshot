@@ -42,6 +42,7 @@ struct Device {
     VkQueue queue = VK_NULL_HANDLE;
     // extensions in use
     bool atomic_float = false, atomic_float_add = false;   // (VK_EXT_shader_atomic_float: native float atomic add on buffers)
+    bool mesh_fallback = false;   // compute + vertex replacement on GPUs without mesh stages
     bool mesh_shader = false, external_memory_host = false, external_memory_fd = false, dma_buf_import = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
@@ -209,6 +210,7 @@ bool has_stencil(VkFormat f);
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
 void texture_refresh_request();   // (the Insert menu's "Refresh memory": vk_texture.cpp)
 void working_set_keep();          // (ask the system to keep the game's memory in RAM: vk_texture.cpp)
+bool mesh_fallback_init();
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false);
 void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
