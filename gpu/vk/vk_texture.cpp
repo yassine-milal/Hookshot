@@ -1439,9 +1439,16 @@ void forget_gpu(Texture* tex) {
         }
 }
 
+// (hookshot, after RufflezAU's wall-clock eviction in issue 595) the time in ms, for a texture's age
+static uint64_t tex_now_ms() {
+    using namespace std::chrono;
+    return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb) {
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
+    x.last_ms = tex_now_ms();
     x.gpu = t->gpu, x.d = t->d, x.L = t->L, x.nvn_format = t->d.format;
     x.guest = host->gpu_guest(t->gpu);
     x.guest_size = t->L.size;
@@ -1882,6 +1889,7 @@ uint32_t texture_epoch() {
 
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
+    tex->last_ms = tex_now_ms();
     tex->last_value = rec_value;
     if (!for_sampling) return tex;
     // contents: from guest memory unless the GPU wrote the image (then it is the content, unless the texture was
@@ -2547,6 +2555,7 @@ void texture_written(Texture* tex) {
 
 bool texture_touch_quick(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
+    tex->last_ms = tex_now_ms();
     tex->last_value = rec_value;
     if (!for_sampling) return true;
     if (tex->gpu_written && !tex->released && !tex->only_cleared) return true;
@@ -3134,12 +3143,24 @@ void texture_frame(uint64_t completed) {
              (unsigned long long)(finalized_kept >> 10), n ? line : "");
     }
     const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
+    // (hookshot, after RufflezAU's wall-clock eviction, issue 595) an age counted in presents only: at 60 fps 60 presents are a
+    // second, at the 1-5 fps of an overloaded GPU they are 12-60 s, so the textures grew far past the budget between sweeps, VRAM
+    // went over what the driver allows, it paged, the frames got slower and the eviction slower still. Old enough now: that many
+    // presents, or as much time as they take at 60 fps once it is two presents unused (in use, however long a frame takes)
+    const uint64_t now_ms = tex_now_ms();
+    static const bool by_time = !getenv("RX_VK_EVICT_BY_TIME") || atoi(getenv("RX_VK_EVICT_BY_TIME")) != 0;
+    const auto older = [&](uint64_t last, const Texture* t, uint64_t presents) {
+        const uint64_t frames = frame_no - last;
+        if (frames >= presents) return true;
+        if (!by_time || frames < 2) return false;
+        return now_ms - t->last_ms >= presents * 1000 / 60;
+    };
     const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
     static uint64_t n_dead, b_dead, dead_logged_at;
     for (auto& [last, tex] : order) {
-        if ((!sweep && total_bytes <= budget / 8 * 7) || frame_no - last < need_dead) break;
+        if ((!sweep && total_bytes <= budget / 8 * 7) || !older(last, tex, need_dead)) break;
         const bool shifted = drawn_over_shifted(tex);
-        if (frame_no - last < need_unused && !shifted) continue;   // (younger: only a dead transient target goes)
+        if (!older(last, tex, need_unused) && !shifted) continue;   // (younger: only a dead transient target goes)
         if (tex->last_value > completed) continue;
         // (nor what the GPU wrote and the game still has: the image is its only copy, and one made again over that
         // storage started empty or from stale memory: a sky or course texture drawn once, garbage from then on.
@@ -3162,7 +3183,7 @@ void texture_frame(uint64_t completed) {
                      (unsigned long long)(keep_finalized_max >> 20), tex->id, (unsigned long long)tex->gpu, tex->width,
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
-        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && frame_no - last < keep_rendered) continue;
+        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && !older(last, tex, keep_rendered)) continue;
         if (sweep && !overwritten) continue;
         // (and a small one never: its texels exist nowhere else, and it is made once and kept by the game. The sky's
         // 256 x 256 lookup table, unused while a menu was up, went and came back from memory as garbage: the rainbow

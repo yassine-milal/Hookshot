@@ -217,6 +217,9 @@ bool create_device() {
     optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, dev.vertex_divisor);
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
+    // (hookshot) which memory Windows pages out first when the process is over what the driver allows (RX_VK_MEMORY_PRIORITY=0: off)
+    if (!(getenv("RX_VK_MEMORY_PRIORITY") && atoi(getenv("RX_VK_MEMORY_PRIORITY")) == 0))
+        optional(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME, dev.memory_priority);
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
@@ -281,7 +284,10 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT mprio{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    if (dev.memory_priority) *tail = &mprio, tail = &mprio.pNext;
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    dev.memory_priority = dev.memory_priority && mprio.memoryPriority;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&

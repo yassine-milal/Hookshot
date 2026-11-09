@@ -19,7 +19,8 @@ bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
     f.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo ci{};
     ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
-               (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0);
+               (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0) |
+               (dev.memory_priority ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT : 0);
     ci.physicalDevice = dev.physical;
     ci.device = dev.device;
     ci.instance = dev.instance;
@@ -144,7 +145,8 @@ void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);
 }
-bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation, bool dedicated) {
+bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation, bool dedicated,
+                          float priority) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
     bi.usage = usage;
@@ -153,6 +155,7 @@ bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     if (dev.memory_budget) ai.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    ai.priority = priority;   // (a dedicated allocation's own; blocks keep VMA's 0.5)
     return vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, nullptr) == VK_SUCCESS;
 }
 /// (every heap: what VMA has in blocks and allocations there, what the process uses of it, its budget; one line)
