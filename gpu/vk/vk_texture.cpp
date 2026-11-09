@@ -3153,7 +3153,8 @@ void texture_frame(uint64_t completed) {
         const uint64_t frames = frame_no - last;
         if (frames >= presents) return true;
         if (!by_time || frames < 2) return false;
-        return now_ms - t->last_ms >= presents * 1000 / 60;
+        const uint64_t at = t->last_ms;   // (another thread may stamp it after now_ms was read: then it is in use)
+        return at < now_ms && now_ms - at >= presents * 1000 / 60;
     };
     const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
     static uint64_t n_dead, b_dead, dead_logged_at;
