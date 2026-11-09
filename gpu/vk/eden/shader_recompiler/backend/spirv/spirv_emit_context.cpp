@@ -1811,6 +1811,8 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     used_types |= IR::Type::U32;
     if (profile.support_int8 && profile.support_storage_buffer_8bit &&
         True(used_types & IR::Type::U8)) {
+        AddExtension("SPV_KHR_8bit_storage");   // (hookshot: the 8-bit views need it declared)
+        AddCapability(spv::Capability::StorageBuffer8BitAccess);
         DefineSsbos(*this, storage_types.U8, &StorageDefinitions::U8, info, binding, U8,
                     sizeof(u8));
         DefineSsbos(*this, storage_types.S8, &StorageDefinitions::S8, info, binding, S8,
@@ -1818,6 +1820,8 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     }
     if (profile.support_int16 && profile.support_storage_buffer_16bit &&
         True(used_types & IR::Type::U16)) {
+        AddExtension("SPV_KHR_16bit_storage");   // (hookshot: the 16-bit views need it declared)
+        AddCapability(spv::Capability::StorageBuffer16BitAccess);
         DefineSsbos(*this, storage_types.U16, &StorageDefinitions::U16, info, binding, U16,
                     sizeof(u16));
         DefineSsbos(*this, storage_types.S16, &StorageDefinitions::S16, info, binding, S16,
