@@ -27,6 +27,7 @@
 
 #include "vk_paths.h"
 #include "vk_draw.h"
+#include "vk_menu.h"   // (opts.mesh_mode: the mesh fallback's Mesh objects row and F2)
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"

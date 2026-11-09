@@ -174,7 +174,8 @@ bool mesh_fallback_draw(VkCommandBuffer cmd, const NvnState& s, const DrawArgs& 
                 logf("vk: mesh fallback %016llx draws into a depth-only %ux%u target", (unsigned long long)p.key, at.width, at.height);
         }
         const FallbackLive live = fallback_live();
-        if (live.off || (live.noshadow && depth_only)) return true;
+        const int mode = opts.mesh_mode;   // (the Insert menu's "Mesh objects", F2)
+        if (live.off || mode == 2 || ((live.noshadow || mode == 1) && depth_only)) return true;
     }
     uint64_t mark = fb_now();
     const auto lap = [&](int i) { const uint64_t t = fb_now(); fb_clock.ns[i] += t - mark; mark = t; };

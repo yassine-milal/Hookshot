@@ -47,6 +47,10 @@ const char* tx_framegen(int v) {
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_refresh(int) { return "Press A / Enter"; }
+const char* tx_mesh_mode(int v) {
+    static const char* t[] = {"On", "No shadows", "Off"};
+    return t[std::min(std::max(v, 0), 2)];
+}
 const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
@@ -161,6 +165,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; "
      "Off can be faster on some NVIDIA cards. Applies after restart."},
+    {TAB_GRAPHICS, "Mesh objects", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
+     "Grass, plants, cliffs and effects the game draws with mesh shaders, drawn here through a compute workaround on GPUs "
+     "without them: it can cost a lot in busy places. No shadows: not in the shadow maps. Off: not drawn. F2 cycles it while playing."},
     {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
      "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
      "memory, without leaving the game. A short stutter while the textures still needed come back."},
@@ -887,6 +894,16 @@ void menu_tick() {
     if (fg) GetWindowThreadProcessId(fg, &pid);
     const bool mine = pid == GetCurrentProcessId();
     bool press[K_N] = {};
+    {   // (F2: the mesh fallback's objects On, No shadows, Off, while playing; saved like the menu's row)
+        static bool f2_held = false;
+        const bool f2 = mine && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        if (f2 && !f2_held && dev.mesh_fallback) {
+            opts.mesh_mode = (opts.mesh_mode + 1) % 3;
+            logf("menu: mesh objects %s (F2)", tx_mesh_mode(opts.mesh_mode));
+            save();
+        }
+        f2_held = f2;
+    }
     for (int i = 0; i < K_N; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         press[i] = down && !held[i];
@@ -1005,7 +1022,7 @@ void menu_tick() {
                 *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
                 if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.gpu_device &&
                     r.value != &opts.invert_cam_x && r.value != &opts.invert_cam_y && r.value != &opts.mouse_native &&
-                    r.value != &opts.mouse_sens && r.value != &opts.mouse_invert) {   // (the controls are not the preset's)
+                    r.value != &opts.mouse_sens && r.value != &opts.mouse_invert && r.value != &opts.mesh_mode) {   // (the controls are not the preset's)
                     opts.preset = 0; // Custom
                     sync_preset_budgets(0);
                 }
