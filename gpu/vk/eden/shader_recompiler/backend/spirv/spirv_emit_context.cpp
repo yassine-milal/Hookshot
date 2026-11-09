@@ -1139,6 +1139,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         if (m == &StorageDefinitions::U32) return storage_types.U32.array;
         if (m == &StorageDefinitions::U32x2) return storage_types.U32x2.array;
         if (m == &StorageDefinitions::U32x4) return storage_types.U32x4.array;
+        if (m == &StorageDefinitions::U8) return storage_types.U8.array;     // (hookshot: the direct narrow stores)
+        if (m == &StorageDefinitions::U16) return storage_types.U16.array;
         return Id{};
     }};
     // (EvilOOT, RX_VK_MISS_LOG) the miss log's descriptor (translate_program.cpp: c0+0xff0), -1 none. It is a single storage
@@ -1458,6 +1460,47 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpReturn();
         OpFunctionEnd();
         write_global_cas_loop_func = func;
+    }
+    // (hookshot) Where 8/16-bit storage is there (the profile's narrow views): the narrow global store writes its byte or half
+    // directly, at the exact address, instead of a compare-exchange loop on the 32-bit word around it (which retried under
+    // contention in OoT's table-walking passes, and took the lookup's exact address as the word's). Bytes and halves stored
+    // this way do not disturb their neighbours
+    if (info.stores_global_memory && profile.support_native_narrow_global_store) {
+        const auto make_narrow{[&](u32 bits, Id type, DefPtr member, Id element) -> Id {
+            if (!Sirit::ValidId(type) || !Sirit::ValidId(element)) return Id{};
+            // (the narrow views need these declared: the device has both features on, vk_main.cpp enables what it reports)
+            if (bits == 8) {
+                AddExtension("SPV_KHR_8bit_storage");
+                AddCapability(spv::Capability::StorageBuffer8BitAccess);
+            } else {
+                AddExtension("SPV_KHR_16bit_storage");
+                AddCapability(spv::Capability::StorageBuffer16BitAccess);
+            }
+            const Id func_type{TypeFunction(void_id, U64, U32[1])};
+            const Id func{OpFunction(void_id, spv::FunctionControlMask::MaskNone, func_type)};
+            const Id addr{OpFunctionParameter(U64)};
+            const Id value{OpFunctionParameter(U32[1])};
+            AddLabel();
+            const Id narrow{OpUConvert(type, value)};
+            define_body(member, addr, element, bits == 8 ? 0U : 1U,
+                        [&](Id ssbo_pointer) {
+                            OpStore(ssbo_pointer, narrow);
+                            OpReturn();
+                        }, false);
+            guest_lookup(addr, bits / 8, [&](Id target) {
+                if (gp_level >= 3) {
+                    OpStore(psb_member(type, target), narrow, spv::MemoryAccessMask::Aligned, bits / 8);
+                }
+                OpReturn();
+            });
+            OpReturn();
+            OpFunctionEnd();
+            return func;
+        }};
+        if (True(info.used_storage_buffer_types & IR::Type::U8))
+            write_global_u8_func = make_narrow(8, U8, &StorageDefinitions::U8, storage_types.U8.element);
+        if (True(info.used_storage_buffer_types & IR::Type::U16))
+            write_global_u16_func = make_narrow(16, U16, &StorageDefinitions::U16, storage_types.U16.element);
     }
     // (hookshot) RED/ATOM.E.ADD.F32 at an address no buffer was tracked to: the 32-bit atomics' fallback, with the float
     // sum made in a compare-exchange loop as the storage buffers' f32_add_cas does
