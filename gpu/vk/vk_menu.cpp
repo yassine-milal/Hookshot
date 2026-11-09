@@ -167,10 +167,11 @@ Row rows[] = {
      "Off can be faster on some NVIDIA cards. Applies after restart."},
     {TAB_GRAPHICS, "Mesh objects", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "Grass, plants, cliffs and effects the game draws with mesh shaders, drawn here through a compute workaround on GPUs "
-     "without them: it can cost a lot in busy places. No shadows: not in the shadow maps. Off: not drawn. F2 cycles it while playing."},
+     "without them: it can cost a lot in busy places. No shadows: not in the shadow maps. Off: not drawn. While playing: F4 Off, F5 On, F2 cycles."},
     {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
      "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
-     "memory, without leaving the game. A short stutter while the textures still needed come back."},
+     "memory, without leaving the game. A short stutter while the textures still needed come back. F3+A while playing: "
+     "this and every texture from the game's memory loaded again (white, missing or rainbow textures)."},
 
     // Gameplay (3 rows)
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
@@ -903,6 +904,28 @@ void menu_tick() {
             save();
         }
         f2_held = f2;
+    }
+    {   // (hookshot) F4: mesh objects Off, F5: On, whatever they were (F2 cycles). F3+A: the render refreshed, as Minecraft's F3+A
+        // reloads the world: "Refresh memory" and every texture from the game's memory made again (vk_texture.cpp). The game reads
+        // A as well (left), so Link takes a step while it is held
+        static bool f3a_held = false, f4_held = false, f5_held = false;
+        const bool f3a = mine && (GetAsyncKeyState(VK_F3) & 0x8000) != 0 && (GetAsyncKeyState('A') & 0x8000) != 0;
+        if (f3a && !f3a_held) {
+            texture_reload_request();
+            logf("menu: render refreshed (F3+A)");
+        }
+        f3a_held = f3a;
+        const bool f4 = mine && (GetAsyncKeyState(VK_F4) & 0x8000) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0;   // (not Alt+F4)
+        const bool f5 = mine && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+        if (dev.mesh_fallback && ((f4 && !f4_held) || (f5 && !f5_held))) {
+            const int want = f4 && !f4_held ? 2 : 0;
+            if (opts.mesh_mode != want) {
+                opts.mesh_mode = want;
+                logf("menu: mesh objects %s (%s)", tx_mesh_mode(opts.mesh_mode), want == 2 ? "F4" : "F5");
+                save();
+            }
+        }
+        f4_held = f4, f5_held = f5;
     }
     for (int i = 0; i < K_N; i++) {
         const bool down = mine && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;

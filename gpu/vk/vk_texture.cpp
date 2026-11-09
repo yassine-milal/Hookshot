@@ -59,6 +59,12 @@ namespace mkwvk {
 // the least of the game's memory the system is asked to keep in RAM; default a third of the RAM, at most 10 GB; 0: not asked
 std::atomic<bool> refresh_flag{false};
 void texture_refresh_request() { refresh_flag = true; }
+// (hookshot) F3+A, as Minecraft's F3+A reloads the world: "Refresh memory", and every texture whose texels come from the game's
+// memory (not one the GPU drew: its image is the only copy) let go whatever its age, so it is uploaded and decoded again as it is
+// next drawn. A texture that came back wrong after an eviction (white or missing foliage, rainbow blocks: issue 993) is made
+// right again; a second or two of stutter while they come back
+std::atomic<bool> reload_flag{false};
+void texture_reload_request() { reload_flag = true; refresh_flag = true; }
 void working_set_keep() {
 #ifdef _WIN32
     uint64_t mb;
@@ -3036,7 +3042,15 @@ void texture_frame(uint64_t completed) {
     }
     static const bool no_evict = getenv("RX_VK_NO_EVICT") != nullptr;   // (an experiment: nothing evicted)
     // (hookshot) under the budget, every 600 presents: the render targets drawn over since (below), unused for 120
+    const bool reload = reload_flag.exchange(false);   // (F3+A)
     const bool forced = refresh_flag.exchange(false);   // ("Refresh memory")
+    if (reload) {
+        uint64_t n = 0, b = 0;
+        for (auto& kv : textures)
+            if (!kv.second->gpu_written) n++, b += kv.second->bytes;
+        logf("vk: reload (F3+A): %llu textures from the game's memory (%llu MB) made again as they are next drawn",
+             (unsigned long long)n, (unsigned long long)(b >> 20));
+    }
     if (forced) {
         logf("vk: refresh: %llu MB of textures, letting go of those not drawn for 60 frames", (unsigned long long)(total_bytes >> 20));
         budget = 0;
@@ -3159,9 +3173,10 @@ void texture_frame(uint64_t completed) {
     const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
     static uint64_t n_dead, b_dead, dead_logged_at;
     for (auto& [last, tex] : order) {
-        if ((!sweep && total_bytes <= budget / 8 * 7) || !older(last, tex, need_dead)) break;
+        const bool reloaded = reload && !tex->gpu_written;   // (F3+A: whatever its age)
+        if (!reload && ((!sweep && total_bytes <= budget / 8 * 7) || !older(last, tex, need_dead))) break;
         const bool shifted = drawn_over_shifted(tex);
-        if (!older(last, tex, need_unused) && !shifted) continue;   // (younger: only a dead transient target goes)
+        if (!reloaded && !older(last, tex, need_unused) && !shifted) continue;   // (younger: only a dead transient target goes)
         if (tex->last_value > completed) continue;
         // (nor what the GPU wrote and the game still has: the image is its only copy, and one made again over that
         // storage started empty or from stale memory: a sky or course texture drawn once, garbage from then on.
