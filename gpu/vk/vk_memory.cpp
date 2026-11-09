@@ -3028,7 +3028,16 @@ bool mirror_make(Pool& pool) {
                      (unsigned long long)(mirror_budget() >> 20));
             return false;
         }
-        if (!create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc)) {
+        // (hookshot) a mirror is a copy of guest memory the GPU could read over PCIe instead: when the process is over what the
+        // driver allows, Windows pages something out, and a mirror paged out costs what no mirror costs, where a render target or
+        // a texture drawn every frame paged out made the GPU wait on PCIe each frame (1 fps on an 8 GB card, ~640 MB paged out).
+        // Each its own memory object at a low priority (VK_EXT_memory_priority), so they go first. RX_VK_MIRROR_PRIORITY=<0..1>,
+        // 0.5 as everything else
+        static const float mirror_priority = getenv("RX_VK_MIRROR_PRIORITY") ? (float)atof(getenv("RX_VK_MIRROR_PRIORITY")) : 0.1f;
+        static const bool told = (logf("vk: memory priority %s: mirrors at %.2f (paged out first when over what the driver allows)",
+                                       dev.memory_priority ? "on" : "not supported", mirror_priority), true);
+        (void)told;
+        if (!create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc, dev.memory_priority, mirror_priority)) {
             p->mstate = Pool::MIRROR_REFUSED;
             return false;
         }
