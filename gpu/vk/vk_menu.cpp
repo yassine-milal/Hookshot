@@ -105,6 +105,7 @@ const char* tx_menu_shortcut(int v) {
     static const char* const names[] = {"Insert or F1", "F1 only", "Insert, F1 or Esc"};
     return names[std::clamp(v, 0, 2)];
 }
+const char* tx_refresh(int) { return "Press Enter"; }
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
 const char* tx_nits(int v) {
     static char b[24];
@@ -742,6 +743,9 @@ Row rows[] = {
      "Grass, plants, cliffs and effects the game draws with mesh shaders, drawn by our mesh renderer on GPUs without them (Mesh "
      "shaders at Automatic): it can cost a lot in busy places. No shadows: not in the shadow maps. Off: not drawn. While playing: "
      "F4 Off, F5 On, F2 cycles.", nullptr, false, true},
+    {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
+     "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
+     "memory, without leaving the game. A short stutter while the textures still needed come back.", nullptr, false, true},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -1280,6 +1284,11 @@ void save() {
 void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
+    if (r.value == &opts.refresh) {   // (a button: it does its work and keeps no value)
+        texture_refresh_request();
+        logf("menu: refresh memory");
+        return;
+    }
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
