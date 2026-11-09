@@ -1137,6 +1137,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // (EvilOOT) the structure pointer type of a storage buffer of that member's elements, for OpArrayLength
     const auto struct_pointer_of{[&](DefPtr m) -> Id {
         if (m == &StorageDefinitions::U32) return storage_types.U32.array;
+        if (m == &StorageDefinitions::F32) return storage_types.F32.array;
         if (m == &StorageDefinitions::U32x2) return storage_types.U32x2.array;
         if (m == &StorageDefinitions::U32x4) return storage_types.U32x4.array;
         if (m == &StorageDefinitions::U8) return storage_types.U8.array;     // (hookshot: the direct narrow stores)
@@ -1181,6 +1182,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback, bool add_label = true) {
         if (add_label) AddLabel();
+        // A helper may have only the page-table path, with no bound view of this type.
+        if (!Sirit::ValidId(element_pointer)) return;
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
         // (from Fritchii) Info::native_global_bounds: the candidate pointers the storage buffer pass bound for accesses it
         // left global (any single descriptor not in the driver bank) carry no NVN size word: the address goes to the
@@ -1235,7 +1238,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             // nvn_buffer_used[index], took a descriptor's place in the list for an NVN slot number: with the tracked
             // buffers first, the slots' own descriptors past them were skipped and their reads gave 0. A match is exact,
             // so searching a buffer the access never falls in costs a comparison and nothing else.
-            if (info.storage_buffers_descriptors[index].count > 1) {
+            if (info.storage_buffers_descriptors[index].count > 1 ||
+                !Sirit::ValidId(ssbos[index].*ssbo_member)) {
                 continue;
             }
             const auto& ssbo{info.storage_buffers_descriptors[index]};
@@ -1450,7 +1454,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         }};
         define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
                     [&](Id ssbo_pointer) { cas_loop(ssbo_pointer); }, false);
-        guest_lookup(addr, 4U, [&](Id target) {
+        const Id word_address{OpBitwiseAnd(U64, addr, Constant(U64, ~u64{3}))};
+        guest_lookup(word_address, 4U, [&](Id target) {
             if (gp_level >= 3) {
                 cas_loop(psb_member(U32[1], target));
             } else {
@@ -1467,7 +1472,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // this way do not disturb their neighbours
     if (info.stores_global_memory && profile.support_native_narrow_global_store) {
         const auto make_narrow{[&](u32 bits, Id type, DefPtr member, Id element) -> Id {
-            if (!Sirit::ValidId(type) || !Sirit::ValidId(element)) return Id{};
+            if (!Sirit::ValidId(type)) return Id{};
             // (the narrow views need these declared: the device has both features on, vk_main.cpp enables what it reports)
             if (bits == 8) {
                 AddExtension("SPV_KHR_8bit_storage");
@@ -1477,7 +1482,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 AddCapability(spv::Capability::StorageBuffer16BitAccess);
             }
             const Id func_type{TypeFunction(void_id, U64, U32[1])};
-            const Id func{OpFunction(void_id, spv::FunctionControlMask::MaskNone, func_type)};
+            const Id func{OpFunction(void_id, spv::FunctionControlMask::DontInline, func_type)};
             const Id addr{OpFunctionParameter(U64)};
             const Id value{OpFunctionParameter(U32[1])};
             AddLabel();
@@ -1497,14 +1502,48 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             OpFunctionEnd();
             return func;
         }};
-        if (True(info.used_storage_buffer_types & IR::Type::U8))
+        if (profile.support_storage_buffer_8bit && True(info.used_storage_buffer_types & IR::Type::U8))
             write_global_u8_func = make_narrow(8, U8, &StorageDefinitions::U8, storage_types.U8.element);
-        if (True(info.used_storage_buffer_types & IR::Type::U16))
+        if (profile.support_storage_buffer_16bit && True(info.used_storage_buffer_types & IR::Type::U16))
             write_global_u16_func = make_narrow(16, U16, &StorageDefinitions::U16, storage_types.U16.element);
+    }
+    if (info.stores_global_memory && True(info.used_storage_buffer_types & IR::Type::U16)) {
+        const Id native_half{write_global_u16_func};
+        const Id func_type{TypeFunction(void_id, U64, U32[1])};
+        const Id func{OpFunction(void_id, spv::FunctionControlMask::DontInline, func_type)};
+        const Id addr{OpFunctionParameter(U64)};
+        const Id value{OpFunctionParameter(U32[1])};
+        AddLabel();
+        const auto store{[&](Id target, Id data, u32 bits, Id direct) {
+            if (Sirit::ValidId(direct)) {
+                OpFunctionCall(void_id, direct, target, data);
+                return;
+            }
+            const Id low{OpBitwiseAnd(U32[1], OpUConvert(U32[1], target), Const(3U))};
+            const Id offset{OpShiftLeftLogical(U32[1], low, Const(3U))};
+            OpFunctionCall(void_id, write_global_cas_loop_func, target, data, offset, Const(bits));
+        }};
+        // Keep control flow inside the helper so the guest block labels used by OpPhi remain valid.
+        const Id one{Constant(U64, u64{1})};
+        const Id odd{OpINotEqual(U1, OpBitwiseAnd(U64, addr, one), Constant(U64, u64{0}))};
+        const Id split{OpLabel()}, done{OpLabel()};
+        OpSelectionMerge(done, spv::SelectionControlMask::MaskNone);
+        OpBranchConditional(odd, split, done);
+        AddLabel(split);
+        // An odd halfword can straddle both a 32-bit word and a guest page.
+        store(addr, value, 8, write_global_u8_func);
+        store(OpIAdd(U64, addr, one), OpShiftRightLogical(U32[1], value, Const(8U)), 8,
+              write_global_u8_func);
+        OpReturn();
+        AddLabel(done);
+        store(addr, value, 16, native_half);
+        OpReturn();
+        OpFunctionEnd();
+        write_global_u16_func = func;
     }
     // (hookshot) RED/ATOM.E.ADD.F32 at an address no buffer was tracked to: the 32-bit atomics' fallback, with the float
     // sum made in a compare-exchange loop as the storage buffers' f32_add_cas does
-    if (info.stores_global_memory) {
+    if (info.stores_global_memory && info.uses_atomic_f32_add) {
         const Id func_type{TypeFunction(F32[1], U64, F32[1])};
         const Id func{OpFunction(F32[1], spv::FunctionControlMask::DontInline, func_type)};
         const Id addr{OpFunctionParameter(U64)};
@@ -1551,11 +1590,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const auto native_add{[&](Id pointer) {
             OpReturnValue(OpAtomicFAdd(F32[1], pointer, Const(static_cast<u32>(spv::Scope::Device)), u32_zero_value, value));
         }};
-        // (the bound buffers' f32 views exist only where the program itself adds floats (collect_shader_info marks F32 for
-        // GlobalAtomicAddF32); this helper is made for every program that stores to global memory, and an access chain
-        // on a view that is not there is invalid SPIR-V the driver aborted on. Without the views: the loop on the U32 view,
-        // the page table's pointer still adds natively)
-        if (native && Sirit::ValidId(storage_types.F32.element)) {
+        if (native) {
             define_body(&StorageDefinitions::F32, addr, storage_types.F32.element, 2,
                         [&](Id ssbo_pointer) { native_add(ssbo_pointer); }, false);
         } else {
@@ -1811,8 +1846,6 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     used_types |= IR::Type::U32;
     if (profile.support_int8 && profile.support_storage_buffer_8bit &&
         True(used_types & IR::Type::U8)) {
-        AddExtension("SPV_KHR_8bit_storage");   // (hookshot: the 8-bit views need it declared)
-        AddCapability(spv::Capability::StorageBuffer8BitAccess);
         DefineSsbos(*this, storage_types.U8, &StorageDefinitions::U8, info, binding, U8,
                     sizeof(u8));
         DefineSsbos(*this, storage_types.S8, &StorageDefinitions::S8, info, binding, S8,
@@ -1820,8 +1853,6 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
     }
     if (profile.support_int16 && profile.support_storage_buffer_16bit &&
         True(used_types & IR::Type::U16)) {
-        AddExtension("SPV_KHR_16bit_storage");   // (hookshot: the 16-bit views need it declared)
-        AddCapability(spv::Capability::StorageBuffer16BitAccess);
         DefineSsbos(*this, storage_types.U16, &StorageDefinitions::U16, info, binding, U16,
                     sizeof(u16));
         DefineSsbos(*this, storage_types.S16, &StorageDefinitions::S16, info, binding, S16,
