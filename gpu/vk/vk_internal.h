@@ -39,6 +39,8 @@ struct Device {
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;
     // extensions in use
+    bool atomic_float = false, atomic_float_add = false;   // (VK_EXT_shader_atomic_float: native float atomic add on buffers)
+    bool mesh_fallback = false;   // compute + vertex replacement on GPUs without mesh stages
     bool mesh_shader = false, external_memory_host = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
@@ -161,6 +163,7 @@ uint64_t gpu_pool_start(uint64_t gpu); // (EvilOOT) and where it begins
 bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation,
                           void** mapped);   // (vk_vma.cpp: cached host memory, mapped)
 void flush_mapped(VmaAllocation allocation, uint64_t size);
+void invalidate_mapped(VmaAllocation allocation, uint64_t size);
 void memory_stamp_gpu(uint64_t guest, uint64_t size);   // (a GPU write: memory_stamp, and the pages noted)
 void memory_protect_gpu(uint64_t guest, uint64_t size);  // (RX_VK_PROTECT_BARE=1: pages a shader writes through a table pointer)
 /// (vk_replay.cpp) guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
@@ -199,6 +202,9 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
+bool mesh_fallback_init();
+void texture_refresh_request();   // (hookshot: the Insert menu's "Refresh memory")
+void working_set_keep();          // (hookshot: ask Windows to keep the game's memory in RAM)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation);
 void destroy_image(VkImage image, VmaAllocation allocation);
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,

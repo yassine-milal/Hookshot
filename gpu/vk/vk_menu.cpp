@@ -37,6 +37,7 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_refresh(int) { return "Press A / Enter"; }
 const char* tx_upscale(int v) {
     static const char* t[] = {"Off", "Catmull-Rom", "Lanczos"};
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];   // (a setting past the row: the label, not the next bytes)
@@ -125,6 +126,8 @@ Row rows[] = {
      "Runs the game as if the console were undocked: lower resolutions, lighter on the GPU. Applies after a restart."},
     {"Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD is still stretched. Applies after a restart."},
+    {"Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
+     "Lets go of the textures not drawn lately and asks Windows to keep the game's memory in RAM: what a restart does for memory, without leaving the game. A short stutter while the textures still needed come back."},
     {"FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff,
      "Shows frames per second in the top right corner. With frame generation on, it also shows the game's own rate."},
     {"Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -731,9 +734,12 @@ void menu_tick() {
             int v = *r.value + (press[4] ? r.step : -r.step);
             if (r.value == &opts.framegen && v == 1) v = press[4] ? 2 : 0;   // (off, 2x ... 8x)
             *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-            if (r.value == &opts.preset) {
+            if (r.value == &opts.refresh) {
+                texture_refresh_request();
+                opts.refresh = 0;
+            } else if (r.value == &opts.preset) {
                 apply_preset(*r.value);
-            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps) {
+            } else if (r.value != &opts.fullscreen && r.value != &opts.show_fps && r.value != &opts.refresh) {
                 opts.preset = 0; // Custom
                 sync_preset_budgets(0);
             }

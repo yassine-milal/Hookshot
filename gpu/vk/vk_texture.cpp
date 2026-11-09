@@ -42,6 +42,25 @@
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
 
 namespace mkwvk {
+// (hookshot) "Refresh memory" (Insert menu): the next housekeeping lets go of every texture not drawn for 60 frames, whatever the
+// budget, and the working set is asked for again. And at start-up: Windows took the game's pages away while other programs were
+// in front (13-15 GB down to 6.3 GB, 18000 page faults a second, 3 fps with every thread idle). HOOKSHOT_MIN_WS_MB (default
+// 10240, 0: off): the least of the game's memory Windows is asked to keep in RAM.
+std::atomic<bool> refresh_flag{false};
+void texture_refresh_request() { refresh_flag = true; }
+void working_set_keep() {
+    const char* e = getenv("HOOKSHOT_MIN_WS_MB");
+    const SIZE_T mb = (SIZE_T)(e ? atoi(e) : 10240);
+    if (!mb) return;
+    const SIZE_T lo = mb << 20, hi = (mb << 20) * 3;
+    BOOL ok = SetProcessWorkingSetSizeEx(GetCurrentProcess(), lo, hi, QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
+    const char* how = "kept (hard minimum)";
+    if (!ok) {
+        ok = SetProcessWorkingSetSizeEx(GetCurrentProcess(), lo, hi, QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
+        how = ok ? "asked (soft minimum)" : "refused";
+    }
+    logf("vk: working set: at least %zu MB of the game's memory in RAM: %s (error %lu)", (size_t)mb, how, ok ? 0ul : GetLastError());
+}
 namespace {
 
 uint64_t mix(uint64_t h, uint64_t v) {
@@ -2710,7 +2729,13 @@ void texture_frame(uint64_t completed) {
     }
     static const bool no_evict = getenv("RX_VK_NO_EVICT") != nullptr;   // (an experiment: nothing evicted)
     // (hookshot) under the budget, every 600 presents: the render targets drawn over since (below), unused for 120
-    const bool sweep = total_bytes <= budget;
+    const bool forced = refresh_flag.exchange(false);   // (hookshot: "Refresh memory")
+    if (forced) {
+        logf("vk: refresh: %llu MB of textures, letting go of those not drawn for 60 frames", (unsigned long long)(total_bytes >> 20));
+        budget = 0;
+        working_set_keep();
+    }
+    const bool sweep = !forced && total_bytes <= budget;
     if (no_evict || (sweep && frame_no % 600)) return;
     std::vector<std::pair<uint64_t, Texture*>> order;
     order.reserve(textures.size());

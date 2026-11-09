@@ -35,7 +35,17 @@ bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
 // memory type the pool's is not, are allocated as before.
 VmaPool image_pool = VK_NULL_HANDLE;
 bool image_pool_tried = false;
-constexpr uint64_t kImageBlock = 128ull << 20;
+// (hookshot, P4000 8 GB: a block goes back to the driver only when every image in it is gone, so one texture left in a 128 MB block
+// kept all of it: 1.4-2.2 GB of VRAM "free in the blocks" and the process over what Windows allowed, VRAM paged out, 6-9 fps.
+// 32 MB blocks pin a quarter as much. HOOKSHOT_IMAGE_BLOCK_MB=<MB>: another size)
+uint64_t image_block_size() {
+    static const uint64_t v = [] {
+        const char* e = getenv("HOOKSHOT_IMAGE_BLOCK_MB");
+        const int mb = e ? atoi(e) : 32;
+        return (uint64_t)std::clamp(mb, 8, 256) << 20;
+    }();
+    return v;
+}
 
 VmaPool images_pool() {
     if (image_pool_tried) return image_pool;
@@ -54,9 +64,9 @@ VmaPool images_pool() {
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
-    pi.blockSize = kImageBlock;
+    pi.blockSize = image_block_size();
     if (vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) image_pool = VK_NULL_HANDLE;
-    logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(kImageBlock >> 20), type,
+    logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(image_block_size() >> 20), type,
          image_pool ? "" : ": not made");
     return image_pool;
 }
@@ -119,6 +129,9 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
 }
 void flush_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaFlushAllocation(vma, allocation, 0, size);
+}
+void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
+    if (size) vmaInvalidateAllocation(vma, allocation, 0, size);
 }
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);
