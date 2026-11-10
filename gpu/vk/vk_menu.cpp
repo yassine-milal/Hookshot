@@ -88,6 +88,10 @@ const char* tx_framegen(int v) {
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_refresh(int) { return "Press Enter"; }
+const char* tx_mesh_mode(int v) {
+    static const char* const t[] = {"On", "No shadows", "Off"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
 const char* tx_nits(int v) {
     static char b[24];
@@ -297,6 +301,7 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
+    if (value == &opts.mesh_mode && !dev.mesh_fallback) return true;   // (a GPU with mesh shaders draws them itself)
     return (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
@@ -481,6 +486,8 @@ const char* hn_sharpness(int v, int variant) {
     if (variant > 1) return nullptr;
     return with_dlss ? dlss : v == 0 ? "Off: the picture as it is." : nullptr;
 }
+MENU_HINTS(hn_mesh_mode, 0, "All of them, in the shadows too.", "Drawn, but not into the shadow maps: they cast no shadow.",
+           "Not drawn: the lightest, without grass and foliage.")
 MENU_HINTS(hn_handheld, 0, "Docked: the Output resolution's size.", "Lower resolutions, lighter on the GPU.")
 MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD is still stretched.")
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
@@ -559,9 +566,14 @@ Row rows[] = {
     {TAB_GRAPHICS, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
      "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
      "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
+    {TAB_GRAPHICS, "Mesh objects", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
+     "Grass, plants, cliffs and effects the game draws with mesh shaders, which a GPU without them runs as compute shaders: "
+     "the costly part of a busy scene there. While playing: F2 steps through the three, F4 is Off, F5 is On.", hn_mesh_mode, false, true},
     {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
      "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
-     "memory, without leaving the game. A short stutter while the textures still needed come back.", nullptr, false, true},
+     "memory, without leaving the game. A short stutter while the textures still needed come back. While playing, F3+A does "
+     "this and loads every texture again from the game's memory, for textures that came out white, missing or garbled.",
+     nullptr, false, true},
 
     // Gameplay
     {TAB_GAMEPLAY, "FPS counter", &opts.show_fps, 0, 1, 1, tx_onoff, "Frames per second in the top right corner.", hn_fps,
@@ -1913,6 +1925,7 @@ void menu_set_gpu_count(int count) {
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
+int mesh_objects_mode() { return opts.mesh_mode; }
 int menu_heart_protection() {
     const int v = protect_hearts.load(std::memory_order_relaxed);
     return cheats_on() || v < 0 ? v : 0;
@@ -2047,6 +2060,44 @@ void menu_tick() {
         const bool queued = host && host->take_key_press && host->take_key_press(keys[i]);
         press[i] = host && host->take_key_press ? mine && queued : down && !held[i];
         held[i] = down;
+    }
+    {   // (hookshot) while playing, with or without the menu: F2 steps "Mesh objects" (On, No shadows, Off), F4 sets Off and F5 On;
+        // F3+A refreshes the render, as Minecraft's F3+A reloads the world (vk_texture.cpp texture_reload_request). Taken from the
+        // window's key presses where the host keeps them, as the menu's keys are: at a few frames a second a short press falls
+        // between two looks at the keyboard. A key the player has bound to a button (Controls page) stays the game's
+        enum { H_F2, H_F3, H_F4, H_F5, H_A, H_N };
+        static const int hot_keys[H_N] = {VK_F2, VK_F3, VK_F4, VK_F5, 'A'};
+        static bool hot_held[H_N];
+        bool hot[H_N], down[H_N];
+        for (int i = 0; i < H_N; i++) {
+            down[i] = mine && (GetAsyncKeyState(hot_keys[i]) & 0x8000) != 0;
+            const bool queued = host && host->take_key_press && host->take_key_press(hot_keys[i]);
+            hot[i] = host && host->take_key_press ? mine && queued : down[i] && !hot_held[i];
+            hot_held[i] = down[i];
+        }
+        const auto bound = [](int key) {
+            if (!can_bind()) return false;
+            for (int b = 0; b < HOS_KEY_N; b++)
+                for (int slot = 0; slot < 2; slot++)
+                    if (host->binding(HOS_BIND_KEY, b, slot) == key) return true;
+            return false;
+        };
+        const auto set_mesh = [&](int mode, const char* key) {
+            if (!dev.mesh_fallback || opts.mesh_mode == mode) return;
+            opts.mesh_mode = mode;
+            logf("menu: mesh objects %s (%s)", tx_mesh_mode(mode), key);
+            save();
+            menu_refresh = true;   // (the row, if the menu is open)
+        };
+        const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;   // (Alt+F4 is the window's)
+        if (hot[H_F2] && !bound(VK_F2)) set_mesh((opts.mesh_mode + 1) % 3, "F2");
+        if (hot[H_F4] && !alt && !bound(VK_F4)) set_mesh(2, "F4");
+        if (hot[H_F5] && !bound(VK_F5)) set_mesh(0, "F5");
+        // (F3+A: either pressed while the other is down, or both since the last frame)
+        if (!bound(VK_F3) && ((hot[H_A] && (down[H_F3] || hot[H_F3])) || (hot[H_F3] && down[H_A]))) {
+            texture_reload_request();
+            logf("menu: render refreshed (F3+A)");
+        }
     }
     // (hookshot) the gamepads, by position: Home, or Select and Start together, as Insert; the D-pad as the arrows,
     // the bottom face button as Enter, the right one as Esc (not while a binding waits for its button)

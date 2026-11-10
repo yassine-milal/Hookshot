@@ -5490,6 +5490,13 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (cp->failed) SKIP_HERE();
     Program& p = const_cast<Program&>(*cp);
     if (p.fallback) topo = p.fallback_topology;   // (the mesh program's points, lines or triangles)
+    // (hookshot) the Insert menu's "Mesh objects" (F2, F4 and F5 while playing): on a GPU without mesh shaders their draws are the
+    // costly ones, a compute dispatch or two each. Left out here, before any of that work: all of them (Off), or those into a pass
+    // with no colour target (No shadows: the shadow maps, where they are drawn a second and a third time)
+    if (p.fallback && d.mesh) {
+        const int mode = mesh_objects_mode();
+        if (mode == 2 || (mode == 1 && at.n == 0)) return;
+    }
     PipeEntry* pe;
     {
         PROF_HOT(PROF_PIPE);

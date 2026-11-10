@@ -28,6 +28,7 @@ struct Options {
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
     int show_fps = 0;
     int refresh = 0;      // "Refresh memory": a button, back to 0 at once (vk_texture.cpp texture_refresh_request)
+    int mesh_mode = 0;    // "Mesh objects", on a GPU without mesh shaders: 0 drawn, 1 not into the shadow maps, 2 not drawn (vk_draw.cpp)
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
