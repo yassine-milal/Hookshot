@@ -299,6 +299,8 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
+void texture_refresh_request();   // (the Insert menu's "Refresh memory": vk_texture.cpp)
+void working_set_keep();          // (ask the system to keep the game's memory in RAM: vk_texture.cpp)
 /// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
                   bool textures = false);

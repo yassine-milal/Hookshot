@@ -122,6 +122,7 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_refresh(int) { return "Press Enter"; }
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
 const char* tx_fps_corner(int v) { return fps_stats::corner_name(v); }   // (the FPS counter row: Off, FPS, Frame time, Graph, Breakdown)
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
@@ -1248,6 +1249,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "VRAM budget", &opts.vram_budget, 0, kVramBudgets - 1, 1, tx_vram_budget,
      "How much video memory the game's textures may use, and its copies of game memory with them. Lower it if the game "
      "stutters after a while of play; a preset sets it.", hn_vram_budget, false, true},
+    {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
+     "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
+     "memory, without leaving the game. A short stutter while the textures still needed come back.", nullptr, false, true},
     // (no Mesh shaders row: changing it translated every shader again at the next start, for nothing a player gains. A launch
     // switch now, RX_VK_MESH_SHADERS: gpu/vk/mesh_mode.h)
 
@@ -2323,6 +2327,11 @@ void share_pipeline_list() {
 void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
+    if (r.value == &opts.refresh) {   // (a button: it does its work and keeps no value)
+        texture_refresh_request();
+        logf("menu: refresh memory");
+        return;
+    }
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());

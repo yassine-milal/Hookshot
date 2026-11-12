@@ -66,7 +66,7 @@ class ReadmeMenuRowsTests(unittest.TestCase):
             with self.subTest(option=cells[1]):
                 self.assertEqual(len(cells), 4)
                 self.assertTrue(cells[2])
-                self.assertTrue(cells[3] or cells[1] in ("Motion", "Controls", "Bug report"))   # (they open a page or do a thing: no default)
+                self.assertTrue(cells[3] or cells[1] in ("Motion", "Controls", "Bug report", "Refresh memory"))   # (they open a page or do a thing: no default)
 
 
 if __name__ == "__main__":

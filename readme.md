@@ -249,6 +249,7 @@ lists its files' checksums in `SHA256SUMS`. A copy from anywhere else may not be
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list) |
 | Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
+| Windows: the game gets slow after other programs were in front, or the PC has little RAM | Open the Insert menu, Graphics tab, and press **Refresh memory**. The game also asks Windows to keep up to a third of your RAM (at most 10 GB) for itself; on a PC with 8 GB of RAM or less, set the environment variable `RX_VK_MIN_WORKING_SET_MB=0` (off), or a lower number of MB, to leave that to Windows. |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set there |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
@@ -351,6 +352,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
+| | Refresh memory | A button (Enter or A): lets go of the textures not drawn for a while and asks Windows to keep the game's memory in RAM | |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
