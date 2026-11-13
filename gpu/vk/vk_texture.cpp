@@ -62,6 +62,11 @@ namespace mkwvk {
 // the least of the game's memory the system is asked to keep in RAM; default a third of the RAM, at most 10 GB; 0: not asked
 std::atomic<bool> refresh_flag{false};
 void texture_refresh_request() { refresh_flag = true; }
+// (hookshot) F3+A, as Minecraft's F3+A reloads the world: "Refresh memory", and every texture whose texels come from the game's
+// memory uploaded whole again at its next sampling (texture_frame marks them; not one the GPU drew: its image is the only copy).
+// Uploaded in place, the ones on screen are the first to come back; the frame's upload budget spreads the work over a few frames
+std::atomic<bool> reload_flag{false};
+void texture_reload_request() { reload_flag = true; refresh_flag = true; }
 void working_set_keep() {
 #ifdef _WIN32
     uint64_t mb;
@@ -3880,7 +3885,19 @@ void texture_frame(uint64_t completed) {
     }
     static const bool no_evict = getenv("RX_VK_NO_EVICT") != nullptr;   // (an experiment: nothing evicted)
     // (hookshot) under the budget, every 600 presents: the render targets drawn over since (below), unused for 120
+    const bool reload = reload_flag.exchange(false);   // (F3+A)
     const bool forced = refresh_flag.exchange(false);   // ("Refresh memory")
+    if (reload) {
+        uint64_t n = 0, b = 0;
+        for (auto& kv : textures) {
+            Texture& t = *kv.second;
+            if (t.gpu_written || !t.uploaded) continue;
+            t.uploaded = false;   // (texture_touch: whole again from the game's memory, where the storage is still the game's)
+            n++, b += t.bytes;
+        }
+        logf("vk: reload (F3+A): %llu textures (%llu MB) uploaded again from the game's memory as they are next drawn",
+             (unsigned long long)n, (unsigned long long)(b >> 20));
+    }
     if (forced) {
         logf("vk: refresh: %llu MB of textures, letting go of those not drawn for 60 frames", (unsigned long long)(total_bytes >> 20));
         budget = 0;

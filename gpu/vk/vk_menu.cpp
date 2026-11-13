@@ -745,7 +745,8 @@ Row rows[] = {
      "F4 Off, F5 On, F2 cycles.", nullptr, false, true},
     {TAB_GRAPHICS, "Refresh memory", &opts.refresh, 0, 1, 1, tx_refresh,
      "Lets go of the textures not drawn lately and asks the system to keep the game's memory in RAM: what a restart does for "
-     "memory, without leaving the game. A short stutter while the textures still needed come back.", nullptr, false, true},
+     "memory, without leaving the game. A short stutter while the textures still needed come back. F3+A while playing: "
+     "this and every texture from the game's memory loaded again (white, missing or rainbow textures).", nullptr, false, true},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -2860,6 +2861,15 @@ void menu_tick() {
             }
         }
         f2_held = f2, f4_held = f4, f5_held = f5;
+        // (F3+A, as Minecraft's: "Refresh memory" and every texture from the game's memory uploaded again, for textures that came
+        // back white, missing or garbled. The game reads A as well, so Link takes a step while it is held)
+        static bool f3a_held = false;
+        const bool f3a = mine && (GetAsyncKeyState(VK_F3) & 0x8000) != 0 && (GetAsyncKeyState('A') & 0x8000) != 0;
+        if (f3a && !f3a_held) {
+            texture_reload_request();
+            logf("menu: render refreshed (F3+A)");
+        }
+        f3a_held = f3a;
     }
     {   // (RX_VK_UI_PROMPTS=pad or keys: the prompts for screenshots of test runs, which have no controller and no focus)
         static const char* force = getenv("RX_VK_UI_PROMPTS");
