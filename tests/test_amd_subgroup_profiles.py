@@ -33,6 +33,11 @@ constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
+    // (p4000: make_profile takes the narrow widths and the native float add from the device)
+    struct { bool shaderInt8 = true, uniformAndStorageBuffer8BitAccess = true, storageBuffer8BitAccess = true; } vk12;
+    struct { bool uniformAndStorageBuffer16BitAccess = true, storageBuffer16BitAccess = true; } vk11;
+    struct { bool shaderInt16 = true; } features;
+    bool atomic_float_add = false;
 } dev;
 
 using Shader::Stage;

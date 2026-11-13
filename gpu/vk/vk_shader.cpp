@@ -521,9 +521,14 @@ Shader::Profile make_profile() {
     p.supported_spirv = 0x00010600;
     p.unified_descriptor_binding = true;
     p.support_descriptor_aliasing = true;
-    p.support_int8 = p.support_int16 = p.support_int64 = true;
-    p.support_uniform_and_storage_buffer_8bit = p.support_storage_buffer_8bit = true;
-    p.support_uniform_and_storage_buffer_16bit = p.support_storage_buffer_16bit = true;
+    // (p4000) from the device's features, as vk_main.cpp enables what it reports: they were all told true
+    p.support_int8 = dev.vk12.shaderInt8;
+    p.support_int16 = dev.features.shaderInt16;
+    p.support_int64 = true;
+    p.support_uniform_and_storage_buffer_8bit = dev.vk12.uniformAndStorageBuffer8BitAccess;
+    p.support_storage_buffer_8bit = dev.vk12.storageBuffer8BitAccess;
+    p.support_uniform_and_storage_buffer_16bit = dev.vk11.uniformAndStorageBuffer16BitAccess;
+    p.support_storage_buffer_16bit = dev.vk11.storageBuffer16BitAccess;
     p.support_vertex_instance_id = false;
     p.support_float_controls = true;
     p.support_separate_denorm_behavior = p.support_separate_rounding_mode = true;
@@ -535,6 +540,10 @@ Shader::Profile make_profile() {
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
+    p.support_float32_atomic_add = dev.atomic_float_add;   // (native OpAtomicFAddEXT: eden emit_spirv_atomic.cpp, spirv_emit_context.cpp)
+    // (8/16-bit global stores written as bytes/halves through narrow views, RX_VK_NATIVE_NARROW=0: the compare-exchange loop on the
+    // word as before; an RX_VK_NATIVE* switch, so the program cache stamp follows it)
+    p.support_native_narrow_global_store = !(getenv("RX_VK_NATIVE_NARROW") && atoi(getenv("RX_VK_NATIVE_NARROW")) == 0);
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
@@ -1118,6 +1127,11 @@ uint64_t disk_stamp() {
     const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) | (dev.task_mesh_fallback ? 4u : 0u) |
                           (dev.mesh_port ? 8u : 0u);
     add(&mesh, sizeof mesh);
+    // (p4000: the native float add and narrow widths the translator is told (make_profile), which are the device's: programs made with them are no use without)
+    const uint32_t native[] = {profile().support_float32_atomic_add ? 1u : 0u, profile().support_storage_buffer_8bit ? 1u : 0u,
+                               profile().support_storage_buffer_16bit ? 1u : 0u, profile().support_int8 ? 1u : 0u,
+                               profile().support_int16 ? 1u : 0u};
+    add(native, sizeof native);
     // (and what of the GPU the translator is told (make_profile): its warps' lanes and the driver's shuffle workaround, and
     // which stages it pins to 32 lanes, which keep the short path: profile_graphics. An explicit warp override bypasses
     // the pinned graphics profile even if the base profile already has the requested width)

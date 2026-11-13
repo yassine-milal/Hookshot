@@ -248,6 +248,7 @@ bool create_device() {
     }();
     if (mesh_mode == 2) dev.mesh_shader = false;
     else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
+    optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, dev.atomic_float);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
     if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
@@ -358,6 +359,8 @@ bool create_device() {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     if (dev.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
     if (dev.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afloat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+    if (dev.atomic_float) *tail = &afloat, tail = &afloat.pNext;
     VkPhysicalDeviceFaultFeaturesEXT fault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
@@ -422,6 +425,7 @@ bool create_device() {
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
+    dev.vk11 = f11;
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane
@@ -481,6 +485,12 @@ bool create_device() {
             logf("vk: mesh fallback in use: the OFFICIAL compute path%s", mesh_mode == 0 ? " (RX_VK_PORT_FALLBACK=0)" : " (Mesh shaders row)");
         }
     }
+    // (p4000) a native float atomic add where the GPU has one (VK_EXT_shader_atomic_float): the translator's compare-exchange loops
+    // retried under contention, two OoT passes 14-37 ms a frame on a Quadro P4000. RX_VK_NATIVE_FADD=0: the loops as before; an
+    // RX_VK_NATIVE* switch, so the program cache's stamp sees it
+    dev.atomic_float_add = dev.atomic_float && afloat.shaderBufferFloat32AtomicAdd &&
+                           !(getenv("RX_VK_NATIVE_FADD") && atoi(getenv("RX_VK_NATIVE_FADD")) == 0);
+    logf("vk: native float atomic add on buffers: %s", dev.atomic_float_add ? "yes" : "no (compare-exchange loops)");
     logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
          dev.mesh_port ? "our compute + vertex mesh renderer"
          : dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")

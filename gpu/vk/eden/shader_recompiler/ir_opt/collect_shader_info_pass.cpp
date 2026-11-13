@@ -272,6 +272,18 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     default:
         break;
     }
+    switch (inst.GetOpcode()) {   // (hookshot) narrow global stores: a narrow storage view for the direct write
+    case IR::Opcode::WriteGlobalU8:
+    case IR::Opcode::WriteGlobalS8:
+        info.used_storage_buffer_types |= IR::Type::U8;
+        break;
+    case IR::Opcode::WriteGlobalU16:
+    case IR::Opcode::WriteGlobalS16:
+        info.used_storage_buffer_types |= IR::Type::U16;
+        break;
+    default:
+        break;
+    }
     switch (inst.GetOpcode()) {
     case IR::Opcode::GetCbufU16:
     case IR::Opcode::GetCbufS16:
@@ -691,7 +703,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         break;
     case IR::Opcode::GlobalAtomicAddF32:
     case IR::Opcode::StorageAtomicAddF32:
-        info.used_storage_buffer_types |= IR::Type::U32;
+        info.used_storage_buffer_types |= IR::Type::U32 | IR::Type::F32;   // (hookshot: F32 view for the native add)
         info.uses_atomic_f32_add = true;
         break;
     case IR::Opcode::GlobalAtomicAddF16x2:

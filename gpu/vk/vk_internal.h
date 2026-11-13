@@ -44,6 +44,7 @@ struct Device {
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;
     // extensions in use
+    bool atomic_float = false, atomic_float_add = false;   // (VK_EXT_shader_atomic_float: native float atomic add on buffers)
     bool mesh_shader = false, mesh_queries = false, external_memory_host = false, external_memory_fd = false, dma_buf_import = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
@@ -71,6 +72,7 @@ struct Device {
     bool uses_mesh_fallback(bool has_task) const {
         return mesh_fallback || (task_mesh_fallback && has_task);
     }
+    VkPhysicalDeviceVulkan11Features vk11{};
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
