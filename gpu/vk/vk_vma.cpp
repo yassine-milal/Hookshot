@@ -136,6 +136,7 @@ VmaPool textures_pool() {
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
     pi.blockSize = kImageBlock;
+    pi.priority = kPriorityDefault;   // (p4000: v2.1.0's compacted textures' pool too, not 0 below the mirrors)
     if (vmaCreatePool(vma, &pi, &texture_pool) != VK_SUCCESS) texture_pool = VK_NULL_HANDLE;
     logf("vk: textures from a pool of their own, %llu MB blocks (RX_VK_COMPACT)%s", (unsigned long long)(kImageBlock >> 20),
          texture_pool ? "" : ": not made");
