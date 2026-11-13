@@ -4059,7 +4059,8 @@ void texture_frame(uint64_t completed) {
                      (unsigned long long)(keep_finalized_max >> 20), tex->id, (unsigned long long)tex->gpu, tex->width,
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
-        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered && !older(last, tex, keep_rendered)) continue;
+        if (!overwritten && tex->gpu_written && !tex->released && !evict_rendered &&
+            frame_no - last < keep_rendered && !older(last, tex, keep_rendered)) continue;   // (older: in time too)
         if (sweep && !overwritten) continue;
         // (hookshot) nor a live texture the GPU drew whose texels cannot be written back into its memory (ASTC kept as BC3, sparse,
         // past the write-back's size, ...): its image is the only copy, and one made again over that storage is not uploaded (the

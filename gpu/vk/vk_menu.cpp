@@ -1285,11 +1285,6 @@ void save() {
 void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
-    if (r.value == &opts.refresh) {   // (a button: it does its work and keeps no value)
-        texture_refresh_request();
-        logf("menu: refresh memory");
-        return;
-    }
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
@@ -2810,6 +2805,11 @@ int mesh_objects_mode() { return opts.mesh_objects; }
 
 void menu_tick() {
     fullscreen_tick();
+    if (opts.refresh) {   // ("Refresh memory", a button: set by its row, done here, and back to 0)
+        opts.refresh = 0;
+        texture_refresh_request();
+        logf("menu: refresh memory");
+    }
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
