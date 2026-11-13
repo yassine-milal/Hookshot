@@ -22,6 +22,7 @@ struct Stage {
     VkShaderStageFlagBits vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
     VkShaderModule module = VK_NULL_HANDLE;
     Shader::Info info;
+    std::vector<uint32_t> spirv;   // (p4000, dev.mesh_port) a mesh program's stages as translated: our mesh renderer rewrites them
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
 };
 

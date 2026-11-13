@@ -43,6 +43,9 @@
 #include "vk_gprof.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
+#include "mesh_spirv_rewrite.h"   // (p4000: our mesh renderer, dev.mesh_port: vk_mesh_prepare.h, vk_mesh_draw.h)
+#include "mesh_spirv_builder.h"
+#include "mesh_spirv_compat.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
@@ -375,7 +378,13 @@ thread_local VkCommandBuffer rec_cmd = VK_NULL_HANDLE;
 thread_local uint64_t rec_value = 0;
 
 // ---- per recording: a descriptor pool and an upload stream (reset when the recording is reused) ----
+struct MeshFeedback { uint64_t key, offset; uint32_t capacity, per_task; uint8_t* mapped; VmaAllocation alloc; };   // (mapped/alloc: the stream it went to)
+// (p4000, our mesh renderer) the most mesh groups one task of each program has sent, as the GPU reported it: the scratch is sized for
+// that (rounded up to a power of two) instead of the task cap, which OoT's foliage never reaches (8 of 32)
+std::mutex mesh_emitted_mu;
+std::unordered_map<uint64_t, uint32_t> mesh_emitted;
 struct RecordingRes {
+    std::vector<MeshFeedback> mesh_feedback;   // (p4000: our mesh renderer's size reports, read when the slot is reused)
     VkDescriptorPool pool = VK_NULL_HANDLE;
     std::vector<VkDescriptorPool> extra;   // (pools added when the first ran out)
     // (the stream in use: the first, or one a recording that outgrew it was moved to. Descriptors written before the move hold
@@ -648,12 +657,24 @@ VkFormat supported_vertex_format(VkFormat f) {
 // (+ the guest page table's address, a task draw's first, and the fallback's two buffer addresses)
 constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
 
+#include "vk_mesh_prepare.h"
+
 void ensure_layout(Program& p) {
     if (p.layout) return;
+    // (p4000, our mesh renderer: its programs' layouts are made under one lock, as the precompile's workers and a draw can ask
+    // for the same one; the rewrite of its stages first, and a second set: the scratch's buffers)
+    const bool fallback = p.mesh && dev.mesh_port;
+    std::unique_lock<std::mutex> port_lock;
+    if (fallback) {
+        port_lock = std::unique_lock<std::mutex>(mesh_port_layout_mu);
+        if (p.layout || p.failed) return;
+        if (!mesh_fallback_prepare(p)) { p.failed = true; return; }
+    }
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     uint64_t total = 0;   // (64-bit: a sum of 32-bit counts)
     auto add = [&](VkDescriptorType type, VkShaderStageFlags stage, const auto& descriptors) {
         for (const auto& d : descriptors) {
+            if (fallback && (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT))) stage = VK_SHADER_STAGE_COMPUTE_BIT;
             bindings.push_back({(uint32_t)bindings.size(), type, d.count, stage, nullptr});
             p.binding_types.push_back(type);
             total += d.count;
@@ -672,17 +693,25 @@ void ensure_layout(Program& p) {
     if (p.push) li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     li.bindingCount = (uint32_t)bindings.size();
     li.pBindings = bindings.data();
-    vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &p.set_layout);
+    if (fallback) {   // (p4000: a failure is the program's, not a null layout drawn with)
+        if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &p.set_layout) != VK_SUCCESS) { p.failed = true; return; }
+    } else {
+        vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &p.set_layout);
+    }
     VkShaderStageFlags stages = 0;
     for (const Stage& st : p.stages) stages |= st.vk_stage;
+    if (fallback) stages = (stages & ~(VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT;
     const VkPushConstantRange range{stages, 0, kPushSize};
     VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    pi.setLayoutCount = 1;
-    pi.pSetLayouts = &p.set_layout;
+    const VkDescriptorSetLayout sets[] = {p.set_layout, fallback ? mesh_fallback_get(p).buffers : VK_NULL_HANDLE};
+    pi.setLayoutCount = fallback ? 2 : 1;
+    pi.pSetLayouts = sets;
     pi.pushConstantRangeCount = 1;
     pi.pPushConstantRanges = &range;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
+    if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout) != VK_SUCCESS && fallback) {
+        vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr); p.set_layout = VK_NULL_HANDLE; p.failed = true; return;
+    }
     p.push_stages = stages;
     for (const Stage& st : p.stages) p.uses_render_area |= st.info.uses_render_area;
     p.uses_push = p.uses_render_area;
@@ -1843,7 +1872,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     // (linked here, from the libraries: the draw goes ahead, and the worker's full build replaces it when it is done. Not linked
     // when a library is cold: the entry stays not ready, and the draw is left out or waits for the full build)
     uint64_t cold[2]{};
-    if (gpl_wanted() && !p.fallback) {
+    if (gpl_wanted() && !p.fallback && !(p.mesh && dev.mesh_port)) {   // (p4000: nor our mesh renderer's)
         const auto t0 = std::chrono::steady_clock::now();
         const VkPipeline linked = gpl_link(p, s, at, topo, cold);
         st_link_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
@@ -1884,10 +1913,27 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// cold: made only if the driver has it compiled already; set, and nothing made, when it would have had to compile
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
+    // (p4000, our mesh renderer: the generated vertex stage and the program's fragment stage made for a vertex pipeline, its task
+    // and mesh stages left to the compute dispatches. Never as libraries; the layout (and the rewrite) made here if not yet)
+    const bool port = p.mesh && dev.mesh_port;
+    MeshFallback* port_f = nullptr;
+    if (port) {
+        if (part >= 0) return VK_NULL_HANDLE;
+        if (!p.layout) ensure_layout(const_cast<Program&>(p));
+        if (p.failed || !p.layout) return VK_NULL_HANDLE;
+        port_f = &mesh_fallback_get(p);
+        if (!port_f->vertex) return VK_NULL_HANDLE;
+    }
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
+    if (port) {
+        VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        si.stage = VK_SHADER_STAGE_VERTEX_BIT, si.module = port_f->vertex, si.pName = "main";
+        stages.push_back(si);
+    }
     for (const Stage& st : p.stages) {
+        if (port && st.vk_stage != VK_SHADER_STAGE_FRAGMENT_BIT) continue;
         // (hookshot: the fallback's dispatches are not graphics stages. Only a fallback program's: with native mesh shaders
         // the task and mesh stages are the pipeline's own, and a mesh program built without them was a fragment stage
         // alone, which drew none of its geometry and then lost the device, issue 640)
@@ -1895,7 +1941,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             continue;
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = st.vk_stage;
-        si.module = st.module;
+        si.module = port ? port_f->fragment : st.module;
         si.pName = "main";
         pin_subgroup(si);
         stages.push_back(si);
@@ -1990,7 +2036,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
         VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH,
         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE};
-    if (!p.mesh) {
+    if (!p.mesh || port) {   // (p4000: our mesh renderer's is a vertex pipeline)
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE);
         dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
@@ -2017,8 +2063,8 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     ci.pNext = &ri;
     ci.stageCount = (uint32_t)stages.size();
     ci.pStages = stages.data();
-    ci.pVertexInputState = p.mesh ? nullptr : &vi;
-    ci.pInputAssemblyState = p.mesh ? nullptr : &ia;
+    ci.pVertexInputState = p.mesh && !port ? nullptr : &vi;
+    ci.pInputAssemblyState = p.mesh && !port ? nullptr : &ia;
     ci.pViewportState = &vp;
     ci.pRasterizationState = &rs;
     ci.pMultisampleState = &ms;
@@ -4443,6 +4489,26 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
         logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now)", res.size(),
              (unsigned long long)(kStream >> 20), (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10),
              (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20));
+    if (!r.mesh_feedback.empty()) {   // (p4000: our mesh renderer's reports of what its draws asked for: the work is done, the streams not reused yet)
+        static std::map<uint64_t, std::pair<uint32_t, uint32_t>> maxima;
+        for (const auto& x : r.mesh_feedback) {
+            invalidate_mapped(x.alloc, x.offset + 8);
+            uint32_t values[2];
+            std::memcpy(values, x.mapped + x.offset, sizeof values);
+            {
+                std::lock_guard lk(mesh_emitted_mu);
+                uint32_t& e = mesh_emitted[x.key];
+                e = std::max(e, values[0]);
+            }
+            auto& m = maxima[x.key];
+            if (values[0] > m.second || values[1] > m.first) {
+                m.first = std::max(m.first, values[1]), m.second = std::max(m.second, values[0]);
+                logf("vk: mesh fallback %016llx observed groups %u/%u, emitted %u/%u%s", (unsigned long long)x.key, values[1], x.capacity,
+                     values[0], x.per_task, values[1] > x.capacity || values[0] > x.per_task ? " OVERFLOW" : "");
+            }
+        }
+        r.mesh_feedback.clear();
+    }
     r.used = 0, r.before = 0;
     r.c1_at.clear();
     cur = &r;
@@ -5953,11 +6019,18 @@ static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, c
     temporal_note_skinned_draw(k);
 }
 
+#include "vk_mesh_draw.h"
+
+bool mesh_fallback_init() { return !dev.mesh_port || fallback_arena_ready(); }
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
     stats_tick();
-    mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
+    // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below. p4000: not for our mesh renderer, whose argument
+    // program reads the records itself)
+    if (!(dev.mesh_port && d.mesh)) mesh_indirect_convert(cmd, d);
+    else mesh_conv_buf = VK_NULL_HANDLE;
     VkPrimitiveTopology topo = kMeshDrawTopology;
     if (!d.mesh && !topology(d.prim, topo)) {
         static int logged[32];
@@ -6109,6 +6182,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             ParLock lk;
             ensure_layout(p);
         }
+        if (p.mesh && dev.mesh_port) {   // (p4000: our mesh renderer's rewrite or compute pipelines failed: left out, as before)
+            if (p.failed || !p.layout || !mesh_fallback_pipelines(p)) SKIP_HERE();
+        }
         pe = graphics_pipeline(p, s, at, topo, types);
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
@@ -6172,7 +6248,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_ub == ub_gen && last_desc_dgen == dgen &&
                            (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
-                           (!p.fallback || dw().prog == &p);
+                           (!p.fallback || dw().prog == &p) &&
+                           (!(p.mesh && dev.mesh_port) || dw().prog == &p);   // (p4000: ours pushes them at compute too)
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
         static std::atomic<int> told{0};
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
@@ -6375,6 +6452,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                      (long long)n, (unsigned long long)p.key, (int)topo, d.itype, s.restart_index,
                      d.indirect ? " indirect" : "", d.count);
         }
+    }
+    if (d.mesh && p.mesh && dev.mesh_port) {   // (p4000: our mesh renderer: arguments, task and mesh dispatches, then the vertex draw)
+        if (!mesh_fallback_draw(cmd, s, d, p, at, pl, writes)) SKIP_HERE();
+        st_mesh++, st_draws++;
+        return;
     }
     StatsQuery stats_query(cmd, p.key, d);   // (EvilOOT, RX_VK_DRAW_STATS)
     if (stats_frame_now() && stats_prog_wanted(p.key)) {   // (and the wanted programs' buffers: a mesh draw's stages, fragment)
@@ -7319,7 +7401,8 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     std::atomic<size_t> next{0}, done{0}, libs{0}, variants{0};
     const auto warm = [&](Program& p) {
         // (a fallback program's pipelines are never linked from libraries: graphics_pipeline)
-        if (p.failed || p.compute || p.fallback || p.stages.empty()) return;
+        // (p4000: nor our mesh renderer's, whose layout and rewrite are kept per program: a borrowed one is let go after)
+        if (p.failed || p.compute || p.fallback || (p.mesh && dev.mesh_port) || p.stages.empty()) return;
         ensure_layout(p);
         Targets at{};
         for (int part = 1; part <= 2; part++)
@@ -7607,6 +7690,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     if (!all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
     std::vector<Program*> computes, fallbacks;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
+        // (p4000: our mesh renderer's programs are rewritten and their compute pipelines made by the workers below, not here one by one)
+        if (p.mesh && dev.mesh_port) {
+            if (!p.failed) fallbacks.push_back(&p);
+            return;
+        }
         ensure_layout(p);
         if (p.compute) computes.push_back(&p);
         else if (p.fallback) fallbacks.push_back(&p);   // (hookshot: the mesh fallback's compute pipelines too, before play)
@@ -7658,7 +7746,10 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 // (a program a draw is already building is left to it: compute_state, as in fallback_pipelines_ready)
                 Program& p = *fallbacks[i - computes.size()];
                 int none = 0;
-                if (p.compute_state.compare_exchange_strong(none, 1)) {
+                if (p.mesh && dev.mesh_port) {   // (p4000: our mesh renderer's rewrite and compute pipelines, as its first draw would)
+                    ensure_layout(p);
+                    if (!p.failed && p.layout) mesh_fallback_pipelines(p);
+                } else if (p.compute_state.compare_exchange_strong(none, 1)) {
                     fallback_compute_pipelines(p);
                     p.compute_state.store(2, std::memory_order_release);
                 }
@@ -7718,8 +7809,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         for (std::thread& t : threads) t.join();
         delete pre;
     }
-    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines, %zu mesh fallback programs in %.0f ms (%.0f ms "
+    logf("vk: precompile: %zu programs, %zu graphics and %zu compute pipelines, %zu mesh fallback programs%s in %.0f ms (%.0f ms "
          "of it the caches opened, the notes and programs read)", programs_n, graphics_n, computes_n, fallbacks_n,
+         dev.mesh_port ? " (ours)" : "",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), read_ms);
 }
 
@@ -7787,6 +7879,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             if (i >= keys.size()) return;
             const auto& list = by_program[keys[i]];
             program_cache_borrow(keys[i], [&](Program& p) {
+                if (p.mesh && dev.mesh_port) return;   // (p4000: our mesh renderer's are made at the precompile and in play, not borrowed)
                 ensure_layout(p);
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant)

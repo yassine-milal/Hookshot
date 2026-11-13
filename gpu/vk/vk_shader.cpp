@@ -1114,7 +1114,9 @@ uint64_t disk_stamp() {
     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
     add(&depth, sizeof depth);
     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
-    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) | (dev.task_mesh_fallback ? 4u : 0u);
+    // (p4000: and our mesh renderer, whose programs are native mesh stages that keep their SPIR-V; 8, as 4 is task_mesh_fallback's)
+    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) | (dev.task_mesh_fallback ? 4u : 0u) |
+                          (dev.mesh_port ? 8u : 0u);
     add(&mesh, sizeof mesh);
     // (and what of the GPU the translator is told (make_profile): its warps' lanes and the driver's shuffle workaround, and
     // which stages it pins to 32 lanes, which keep the short path: profile_graphics. An explicit warp override bypasses
@@ -1494,6 +1496,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                 break;
             }
             st.module = make_module(spirv);
+            if (p->mesh && dev.mesh_port) st.spirv = std::move(spirv);   // (p4000: our mesh renderer rewrites it, vk_mesh_prepare.h)
             ok = ok && st.module;
         }
         ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)
@@ -1788,6 +1791,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             st.info = task_t->program.info;
             st.module = make_module(spirv);
             st.vk_stage = fallback ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_TASK_BIT_EXT;
+            if (dev.mesh_port) st.spirv = spirv;   // (p4000: kept for our mesh renderer's rewrite)
             st.c1 = task->c1;
             p.stages.push_back(std::move(st));
         }
@@ -1824,6 +1828,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         ms.info = mesh_t->program.info;
         ms.module = make_module(mspirv);
         ms.vk_stage = fallback ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_MESH_BIT_EXT;
+        if (dev.mesh_port) ms.spirv = mspirv;
         ms.c1 = mesh.c1;
         p.stages.push_back(std::move(ms));
         if (fallback) {   // (the ordinary vertex stage that reads the mesh epilogue's records)
@@ -1899,6 +1904,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             f.info = fs->program.info;
             f.module = make_module(fspirv);
             f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            if (dev.mesh_port) f.spirv = fspirv;
             f.c1 = fsc->c1;
             p.stages.push_back(std::move(f));
         }
@@ -1948,7 +1954,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
 /// An NVN2 mesh program: the stages that write the internal stage buffer are its task (attribute writes only, when
 /// there are two) and mesh programs; a header-only stage, its per-primitive outputs (shader_lock held)
 const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[8]) {
-    if (!dev.mesh_shader && !dev.mesh_fallback) return nullptr;
+    if (!dev.mesh_shader && !dev.mesh_fallback && !dev.mesh_port) return nullptr;
     const std::vector<Code>& cs = codes_of(s);
     const Code *fsc = nullptr, *prim = nullptr, *task = nullptr, *mesh = nullptr;
     for (const Code& c : cs) {
@@ -2289,7 +2295,8 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
             // compute list says: their compute pipelines, made in play, took AMD up to 12 s each on first sight, the foliage and the
             // door white until then. Only a GPU without mesh shaders has such programs)
             if (wanted.count(it->first) ||
-                (!it->second.empty() && ((computes && (it->second[0].kind & 1)) || (fallbacks && (it->second[0].kind & 4))))) {
+                (!it->second.empty() && ((computes && (it->second[0].kind & 1)) || (fallbacks && (it->second[0].kind & 4)) ||
+                                         (fallbacks && dev.mesh_port && (it->second[0].kind & 2))))) {   // (p4000: ours are native mesh programs)
                 work.push_back({it->first, std::move(it->second)});
                 auto& taken = disk_taken[it->first];
                 taken.insert(taken.end(), work.back().second.begin(), work.back().second.end());
@@ -2580,7 +2587,7 @@ std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], cons
     p->key = key;
     p->compute = by_stage[5] != nullptr;
     const bool mesh = by_stage[7] != nullptr;
-    if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
+    if (mesh && !dev.mesh_shader && !dev.mesh_fallback && !dev.mesh_port) return nullptr;
     p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
     p->mesh = mesh && !p->fallback;
     if (mesh)
@@ -2769,7 +2776,7 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
     auto p = std::make_unique<Program>();
     p->key = mesh ? mesh_key(by_stage[6] ? &code_of[6] : nullptr, code_of[7], fs, nullptr, color_types)
                   : graphics_key(code_of[0], fs, attributes, color_types);
-    if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
+    if (mesh && !dev.mesh_shader && !dev.mesh_fallback && !dev.mesh_port) return nullptr;
     p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
     p->mesh = mesh && !p->fallback;
     p->codes[0] = code[0], p->codes[1] = code[1], p->codes[2] = code[2];

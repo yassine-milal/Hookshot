@@ -57,7 +57,7 @@ struct Info {
 }
 #include "cache_types.inc"
 
-struct { uintptr_t device = 123; } dev;
+struct { uintptr_t device = 123; bool mesh_port = false; } dev;   // (p4000: program_cache_read keeps a mesh stage's SPIR-V for our renderer)
 std::map<VkShaderModule, unsigned> destroyed;
 unsigned attempts = 0, created = 0, releases = 0, fail_at = 0;
 int vkCreateShaderModule(uintptr_t device, const VkShaderModuleCreateInfo* info, const void* allocator,

@@ -1304,6 +1304,7 @@ void maybe_split(VkCommandBuffer& cmd) {
 // that, Castle Town's market and eight other places showed no black frame on 3 to 8 threads; the Kakariko walk was not run
 // again, so it stays off. On a 9950X3D the replay's wall time in the market goes from 10.9 ms a frame to 7.75 on 3 threads.
 int par_threads() {
+    if (dev.mesh_port) return 0;   // (p4000: our mesh renderer's GPU scratch is recorded and submitted in draw order)
     static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 0, 0, 8);
     return n;
 }
@@ -4195,6 +4196,7 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 bool replay_start() {
     menu_init();
     if (!memory_init() || !vma_init(instance_proc())) return false;
+    if (!mesh_fallback_init()) return false;   // (p4000: our mesh renderer's scratch, before the textures fill the device budget)
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo tsi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};

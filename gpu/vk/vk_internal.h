@@ -61,6 +61,10 @@ struct Device {
     bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
     bool mesh_fallback = false;   // (hookshot) no VK_EXT_mesh_shader: task and mesh programs as compute shaders (vk_shader.cpp)
     bool task_mesh_fallback = false;
+    // (p4000) our own mesh renderer instead of the official fallback: task and mesh programs translated as native stages, rewritten
+    // to compute and drawn through a generated vertex stage (vk_mesh_prepare.h, vk_mesh_draw.h). On GPUs without mesh shaders with
+    // the Mesh shaders row at Automatic; mesh_fallback and task_mesh_fallback are off then. RX_VK_PORT_FALLBACK=0: the official one
+    bool mesh_port = false;
     bool uses_mesh_fallback(bool has_task) const {
         return mesh_fallback || (task_mesh_fallback && has_task);
     }
@@ -252,6 +256,7 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
+bool mesh_fallback_init();   // (p4000: our mesh renderer's scratch and argument program, made before the textures: vk_draw.cpp)
 /// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
                   bool textures = false);

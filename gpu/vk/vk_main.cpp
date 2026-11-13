@@ -449,7 +449,7 @@ bool create_device() {
     // (hookshot, issue 640) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
     dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
-    if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
+    // (p4000: its "issue 640 fallback" line is said below, once it is known whether ours runs instead)
     bool task_mesh_fallback = false;
 #ifdef _WIN32
     // Navi 22 can time out on task + mesh draws in the AMD Windows driver (issue 996).
@@ -459,8 +459,24 @@ bool create_device() {
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
     dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
     if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
+    {   // (p4000) our own mesh renderer (the Lichii layer's converter: every task and mesh program as compute, drawn with the game's own
+        // fragment programs) where there are no mesh shaders and the row is Automatic; Compute keeps the official path.
+        // RX_VK_PORT_FALLBACK=0: the official one at Automatic too. RX_VK_FALLBACK_FORCE=1: ours on a GPU with mesh shaders, to compare
+        const char* port_env = getenv("RX_VK_PORT_FALLBACK");
+        const bool force = getenv("RX_VK_FALLBACK_FORCE") && atoi(getenv("RX_VK_FALLBACK_FORCE")) != 0;
+        dev.mesh_port = (!dev.mesh_shader || force) && f12.bufferDeviceAddress && mesh_mode == 0 && !(port_env && atoi(port_env) == 0) &&
+                        !getenv("RX_VK_NO_MESH_FALLBACK");
+        if (dev.mesh_port) {
+            dev.mesh_fallback = dev.task_mesh_fallback = false;   // (the official path off: ours draws every task and mesh program)
+            logf("vk: mesh fallback in use: OURS (compute + vertex mesh renderer, p4000 port; RX_VK_PORT_FALLBACK=0: the official compute path)");
+        } else if (dev.mesh_fallback || dev.task_mesh_fallback) {
+            if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
+            logf("vk: mesh fallback in use: the OFFICIAL compute path%s", mesh_mode == 0 ? " (RX_VK_PORT_FALLBACK=0)" : " (Mesh shaders row)");
+        }
+    }
     logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
-         dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
+         dev.mesh_port ? "our compute + vertex mesh renderer"
+         : dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
                          : dev.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
@@ -1099,7 +1115,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
-    if (!dev.mesh_shader && !dev.mesh_fallback && !getenv("RX_VK_NO_MESH_WARNING")) {
+    if (!dev.mesh_shader && !dev.mesh_fallback && !dev.mesh_port && !getenv("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
         // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
         // (a GPU with no buffer device addresses has no fallback to run either)

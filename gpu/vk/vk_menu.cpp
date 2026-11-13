@@ -544,6 +544,10 @@ const char* tx_mesh_mode(int v) {
     static const char* t[] = {"Automatic", "Native", "Compute"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
+const char* tx_mesh_objects(int v) {   // (p4000: our mesh renderer's objects)
+    static const char* t[] = {"On", "No shadows", "Off"};
+    return t[std::min(std::max(v, 0), 2)];
+}
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -734,6 +738,10 @@ Row rows[] = {
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true},
+    {TAB_GRAPHICS, "Mesh objects", &opts.mesh_objects, 0, 2, 1, tx_mesh_objects,
+     "Grass, plants, cliffs and effects the game draws with mesh shaders, drawn by our mesh renderer on GPUs without them (Mesh "
+     "shaders at Automatic): it can cost a lot in busy places. No shadows: not in the shadow maps. Off: not drawn. While playing: "
+     "F4 Off, F5 On, F2 cycles.", nullptr, false, true},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -2788,6 +2796,8 @@ void cheat_press(int i, const bool* press, bool& changed) {
     }
 }
 
+int mesh_objects_mode() { return opts.mesh_objects; }
+
 void menu_tick() {
     fullscreen_tick();
     enum { K_N = 17 };
@@ -2820,6 +2830,28 @@ void menu_tick() {
     const bool chord_now = (raw & chord) == chord && (pad_held & chord) != chord;
     pad_held = raw;
     if (pad_press) pad_last = true;   // (a controller: its buttons in the prompts)
+    {   // (p4000) our mesh renderer's objects while playing, saved like the menu's row: F2 cycles On, No shadows, Off; F4 Off and F5 On,
+        // whatever they were (Alt+F4 left alone)
+        static bool f2_held = false, f4_held = false, f5_held = false;
+        const bool f2 = mine && (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        const bool f4 = mine && (GetAsyncKeyState(VK_F4) & 0x8000) != 0 && (GetAsyncKeyState(VK_MENU) & 0x8000) == 0;
+        const bool f5 = mine && (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+        if (dev.mesh_port) {
+            if (f2 && !f2_held) {
+                opts.mesh_objects = (opts.mesh_objects + 1) % 3;
+                logf("menu: mesh objects %s (F2)", tx_mesh_objects(opts.mesh_objects));
+                save();
+            } else if ((f4 && !f4_held) || (f5 && !f5_held)) {
+                const int want = f4 && !f4_held ? 2 : 0;
+                if (opts.mesh_objects != want) {
+                    opts.mesh_objects = want;
+                    logf("menu: mesh objects %s (%s)", tx_mesh_objects(opts.mesh_objects), want == 2 ? "F4" : "F5");
+                    save();
+                }
+            }
+        }
+        f2_held = f2, f4_held = f4, f5_held = f5;
+    }
     {   // (RX_VK_UI_PROMPTS=pad or keys: the prompts for screenshots of test runs, which have no controller and no focus)
         static const char* force = getenv("RX_VK_UI_PROMPTS");
         if (force) pad_last = !strcmp(force, "pad");
