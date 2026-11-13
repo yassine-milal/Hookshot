@@ -65,6 +65,9 @@ struct Device {
     // to compute and drawn through a generated vertex stage (vk_mesh_prepare.h, vk_mesh_draw.h). On GPUs without mesh shaders with
     // the Mesh shaders row at Automatic; mesh_fallback and task_mesh_fallback are off then. RX_VK_PORT_FALLBACK=0: the official one
     bool mesh_port = false;
+    // (p4000) what mesh_fallback and task_mesh_fallback were before ours took over: given back by mesh_port_abandon() when ours
+    // cannot be set up, so the game still starts, on the official path
+    bool official_mesh_fallback = false, official_task_mesh_fallback = false;
     bool uses_mesh_fallback(bool has_task) const {
         return mesh_fallback || (task_mesh_fallback && has_task);
     }
@@ -257,6 +260,8 @@ bool has_stencil(VkFormat f);
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
 bool mesh_fallback_init();   // (p4000: our mesh renderer's scratch and argument program, made before the textures: vk_draw.cpp)
+/// (p4000) our mesh renderer given up before any program is read or translated: the official fallback from here (vk_main.cpp)
+void mesh_port_abandon(const char* why);
 /// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
                   bool textures = false);

@@ -4450,12 +4450,48 @@ void draw_flush_recording(int slot) {
     }
 }
 
+/// (p4000) What the GPU reported for the slot's last recording's mesh draws: the most mesh groups a task of each program sent (the
+/// scratch is sized for it) and the most the draw asked for. A line when a program's numbers double, or pass what the draw had room
+/// for (OVERFLOW: objects were cut that frame; the next draws have the room)
+void mesh_feedback_read(RecordingRes& r) {
+    if (r.mesh_feedback.empty()) return;
+    struct Seen { uint32_t groups = 0, emitted = 0, said_groups = 0, said_emitted = 0; };
+    static std::map<uint64_t, Seen> maxima;
+    static int overflow_lines = 0;
+    for (const auto& x : r.mesh_feedback) {
+        if (!x.mapped) continue;
+        invalidate_mapped(x.alloc, x.offset + 8);
+        uint32_t values[2];
+        std::memcpy(values, x.mapped + x.offset, sizeof values);
+        {
+            std::lock_guard lk(mesh_emitted_mu);
+            uint32_t& e = mesh_emitted[x.key];
+            e = std::max(e, values[0]);
+        }
+        Seen& m = maxima[x.key];
+        if (values[0] <= m.emitted && values[1] <= m.groups) continue;
+        m.groups = std::max(m.groups, values[1]), m.emitted = std::max(m.emitted, values[0]);
+        const bool overflow = values[1] > x.capacity || values[0] > x.per_task;
+        const bool grown = m.groups >= 2 * (uint64_t)m.said_groups || m.emitted >= 2 * (uint64_t)m.said_emitted;
+        if ((overflow && overflow_lines < 400) || (!overflow && grown && maxima.size() <= 400)) {
+            overflow_lines += overflow;
+            m.said_groups = m.groups, m.said_emitted = m.emitted;
+            logf("vk: mesh fallback %016llx observed groups %u/%u, emitted %u/%u%s", (unsigned long long)x.key, values[1], x.capacity,
+                 values[0], x.per_task, overflow ? " OVERFLOW" : "");
+        }
+    }
+    r.mesh_feedback.clear();
+}
+
 void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     rec_cmd = cmd;
     rec_value = value;
     ParLock lk;
     if ((size_t)slot >= res.size()) res.resize((size_t)slot + 1);
     RecordingRes& r = res[slot];
+    // (p4000: our mesh renderer's reports of what its draws asked for, read first: the slot's last recording is done, and the streams
+    // they were copied to are still there (the grown ones are given back just below))
+    mesh_feedback_read(r);
     if (!r.pool) {
         r.pool = make_pool();
     } else {
@@ -4489,26 +4525,6 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
         logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now)", res.size(),
              (unsigned long long)(kStream >> 20), (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10),
              (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20));
-    if (!r.mesh_feedback.empty()) {   // (p4000: our mesh renderer's reports of what its draws asked for: the work is done, the streams not reused yet)
-        static std::map<uint64_t, std::pair<uint32_t, uint32_t>> maxima;
-        for (const auto& x : r.mesh_feedback) {
-            invalidate_mapped(x.alloc, x.offset + 8);
-            uint32_t values[2];
-            std::memcpy(values, x.mapped + x.offset, sizeof values);
-            {
-                std::lock_guard lk(mesh_emitted_mu);
-                uint32_t& e = mesh_emitted[x.key];
-                e = std::max(e, values[0]);
-            }
-            auto& m = maxima[x.key];
-            if (values[0] > m.second || values[1] > m.first) {
-                m.first = std::max(m.first, values[1]), m.second = std::max(m.second, values[0]);
-                logf("vk: mesh fallback %016llx observed groups %u/%u, emitted %u/%u%s", (unsigned long long)x.key, values[1], x.capacity,
-                     values[0], x.per_task, values[1] > x.capacity || values[0] > x.per_task ? " OVERFLOW" : "");
-            }
-        }
-        r.mesh_feedback.clear();
-    }
     r.used = 0, r.before = 0;
     r.c1_at.clear();
     cur = &r;
@@ -6183,7 +6199,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             ensure_layout(p);
         }
         if (p.mesh && dev.mesh_port) {   // (p4000: our mesh renderer's rewrite or compute pipelines failed: left out, as before)
-            if (p.failed || !p.layout || !mesh_fallback_pipelines(p)) SKIP_HERE();
+            if (p.failed || !p.layout || !mesh_fallback_pipelines(p, false)) SKIP_HERE();
         }
         pe = graphics_pipeline(p, s, at, topo, types);
     }
@@ -7813,6 +7829,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
          "of it the caches opened, the notes and programs read)", programs_n, graphics_n, computes_n, fallbacks_n,
          dev.mesh_port ? " (ours)" : "",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), read_ms);
+    if (dev.mesh_port) mesh_port_summary("after the precompile");
 }
 
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built

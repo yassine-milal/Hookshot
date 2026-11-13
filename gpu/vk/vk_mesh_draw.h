@@ -136,7 +136,7 @@ FallbackLive fallback_live() {
     return v;
 }
 
-// (where the fallback's CPU time goes, per stage, logged every 10 s: the replay thread is the frame's limit, and each mesh draw costs it
+// (where the fallback's CPU time goes, per stage, logged every 60 s: the replay thread is the frame's limit, and each mesh draw costs it
 // a pass break, barriers, an argument pass and two descriptor binds)
 struct FallbackClock {
     uint64_t ns[6]{};
@@ -149,7 +149,7 @@ inline uint64_t fb_now() {
 }
 void fb_clock_report() {
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - fb_clock.since).count();
-    if (secs < 10.0) return;
+    if (secs < 60.0) return;   // (a line a minute: it was every 10 s)
     static const char* names[6] = {"setup", "prepare", "arguments", "compute", "draw", "report"};
     uint64_t total = 0;
     for (const uint64_t v : fb_clock.ns) total += v;
@@ -242,7 +242,10 @@ bool mesh_fallback_draw(VkCommandBuffer cmd, const NvnState& s, const DrawArgs& 
     } else {
         const uint64_t groups = (uint64_t)std::max(d.groups[0],0)*std::max(d.groups[1],1)*std::max(d.groups[2],1);
         if (groups > capacity) {
-            logf("vk: mesh fallback direct draw exceeds scratch capacity: %llu > %u", (unsigned long long)groups, capacity);
+            static int told = 0;   // (a few times: it was a line for every such draw, every frame)
+            if (told < 20 && ++told)
+                logf("vk: mesh fallback direct draw of %016llx exceeds scratch capacity: %llu > %u (left out; RX_VK_FALLBACK_SCRATCH_MB)",
+                     (unsigned long long)p.key, (unsigned long long)groups, capacity);
             return false;
         }
     }

@@ -472,6 +472,7 @@ bool create_device() {
         const bool force = getenv("RX_VK_FALLBACK_FORCE") && atoi(getenv("RX_VK_FALLBACK_FORCE")) != 0;
         dev.mesh_port = (!dev.mesh_shader || force) && f12.bufferDeviceAddress && mesh_mode == 0 && !(port_env && atoi(port_env) == 0) &&
                         !getenv("RX_VK_NO_MESH_FALLBACK");
+        dev.official_mesh_fallback = dev.mesh_fallback, dev.official_task_mesh_fallback = dev.task_mesh_fallback;
         if (dev.mesh_port) {
             dev.mesh_fallback = dev.task_mesh_fallback = false;   // (the official path off: ours draws every task and mesh program)
             logf("vk: mesh fallback in use: OURS (compute + vertex mesh renderer, p4000 port; RX_VK_PORT_FALLBACK=0: the official compute path)");
@@ -522,6 +523,18 @@ bool create_device() {
 }
 
 } // namespace
+
+/// (p4000) Our mesh renderer could not be set up (its scratch or argument program): the official compute path instead, as if
+/// RX_VK_PORT_FALLBACK=0. Called before the program cache is opened (replay_start), so its stamp and every program are the
+/// official path's; the game starts either way
+void mesh_port_abandon(const char* why) {
+    if (!dev.mesh_port) return;
+    dev.mesh_port = false;
+    dev.mesh_fallback = dev.official_mesh_fallback, dev.task_mesh_fallback = dev.official_task_mesh_fallback;
+    logf("vk: mesh fallback: OURS is OFF for this run (%s); in use: %s", why,
+         dev.mesh_fallback || dev.task_mesh_fallback ? "the OFFICIAL compute path" : dev.mesh_shader ? "native mesh shaders" : "none");
+}
+
 
 /// (hookshot) The UNORM format of an sRGB one (the same bytes, read and written as they are), else the format itself
 VkFormat unorm_of(VkFormat f) {

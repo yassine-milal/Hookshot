@@ -14,9 +14,17 @@ struct MeshFallback {
 std::unordered_map<const Program*, MeshFallback> mesh_fallbacks;   // (nodes: a reference stays good while others come and go)
 std::recursive_mutex mesh_fallback_mu;
 std::mutex mesh_port_layout_mu;   // (ensure_layout of our programs: one at a time, a draw and the precompile's workers alike)
+// (what became of the programs, for one summary line (mesh_port_summary) instead of a line a program at every start)
+std::atomic<uint32_t> mesh_port_converted{0}, mesh_port_unavailable{0}, mesh_port_pipelines_failed{0};
+VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl);   // (vk_draw.cpp, below: the app's pipeline cache, the driver's faults caught)
+extern std::atomic<int64_t> pcache_built_since_save;   // (vk_draw.cpp, below: the pipeline cache has something to save)
 MeshFallback& mesh_fallback_get(const Program& p) {
     std::lock_guard lk(mesh_fallback_mu);
-    return mesh_fallbacks.at(&p);
+    // (always there for a program whose layout was made, which every caller checks first; an empty one, never an exception,
+    // if a caller did not: its null modules and pipelines leave the draw out)
+    static MeshFallback none;
+    const auto it = mesh_fallbacks.find(&p);
+    return it != mesh_fallbacks.end() ? it->second : none;
 }
 
 void mesh_fallback_forget(const Program& p) {
@@ -43,8 +51,18 @@ bool mesh_fallback_prepare(Program& p) {
         if (st.vk_stage == VK_SHADER_STAGE_TASK_BIT_EXT) ts = &st;
         if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) fs = &st;
     }
+    // (the stages' SPIR-V is only for this rewrite, which is made once a program, whatever comes of it: let go at the end,
+    // megabytes for the ~1300 mesh programs otherwise)
+    struct Release {
+        Program& p;
+        ~Release() {
+            for (Stage& st : p.stages) std::vector<uint32_t>().swap(st.spirv);
+        }
+    } release{p};
     const auto fail = [&](const std::string& why) {
-        logf("vk: mesh fallback %016llx unavailable: %s", (unsigned long long)p.key, why.c_str());
+        // (the first ones in full, then counted: mesh_port_summary. The program is marked failed by ensure_layout: not tried again)
+        if (mesh_port_unavailable.fetch_add(1, std::memory_order_relaxed) < 24)
+            logf("vk: mesh fallback %016llx unavailable: %s (its draws are left out)", (unsigned long long)p.key, why.c_str());
         mesh_fallback_forget(p);
         return false;
     };
@@ -101,15 +119,21 @@ bool mesh_fallback_prepare(Program& p) {
     li.bindingCount = 8; li.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &f.buffers) != VK_SUCCESS) return fail("buffer descriptor layout");
     f.ok = true;
-    logf("vk: mesh fallback %016llx converted: %u vertices, %u primitives, %u vertex/%u primitive outputs, task cap %u",
-         (unsigned long long)p.key, f.max_v, f.max_p, f.nv, f.np, f.per_task);
+    if (mesh_port_converted.fetch_add(1, std::memory_order_relaxed) < 6)   // (a few as samples: ~1300 lines a start otherwise)
+        logf("vk: mesh fallback %016llx converted: %u vertices, %u primitives, %u vertex/%u primitive outputs, task cap %u",
+             (unsigned long long)p.key, f.max_v, f.max_p, f.nv, f.np, f.per_task);
     return true;
 }
 
-bool mesh_fallback_pipelines(Program& p) {
+/// The program's task and mesh compute pipelines, made once (a failure is kept: not compiled again at every draw).
+/// wait false (a draw): false as well while another thread is compiling them, a precompile worker the start went on without;
+/// the draw is left out until they are there, as other pipelines still compiling are
+bool mesh_fallback_pipelines(Program& p, bool wait = true) {
     MeshFallback& f = mesh_fallback_get(p);
     if (const int done = f.pipelines.load(std::memory_order_acquire)) return done == 1;
-    std::lock_guard lk(f.build);
+    std::unique_lock lk(f.build, std::defer_lock);
+    if (wait) lk.lock();
+    else if (!lk.try_lock()) return false;
     if (const int done = f.pipelines.load(std::memory_order_acquire)) return done == 1;
     const auto make = [&](VkShaderModule module, VkPipeline& out) {
         if (!module || out) return true;
@@ -117,11 +141,25 @@ bool mesh_fallback_pipelines(Program& p) {
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
         ci.layout = p.layout;
         pin_subgroup(ci.stage);
-        const VkResult result = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &out);
-        if (result != VK_SUCCESS) logf("vk: mesh fallback %016llx compute pipeline failed: %d", (unsigned long long)p.key, (int)result);
+        // (as the official fallback's: through the app's pipeline cache, so the next start has them without the driver's own
+        // cache, and a fault in the driver's compiler costs this program, not the game)
+        const VkResult result = cached_compute(&ci, &out);
+        if (result != VK_SUCCESS) {
+            out = VK_NULL_HANDLE;
+            if (mesh_port_pipelines_failed.fetch_add(1, std::memory_order_relaxed) < 24)
+                logf("vk: mesh fallback %016llx compute pipeline failed: %d (its draws are left out)", (unsigned long long)p.key, (int)result);
+        } else {
+            pcache_built_since_save++;
+        }
         return result == VK_SUCCESS;
     };
     const bool made = make(f.task, f.task_pipeline) && make(f.mesh, f.mesh_pipeline);
     f.pipelines.store(made ? 1 : 2, std::memory_order_release);
     return made;
+}
+
+/// One line of what became of our programs so far (after the precompile)
+void mesh_port_summary(const char* when) {
+    logf("vk: mesh fallback (ours) %s: %u programs converted, %u unavailable, %u with a compute pipeline that failed", when,
+         mesh_port_converted.load(), mesh_port_unavailable.load(), mesh_port_pipelines_failed.load());
 }

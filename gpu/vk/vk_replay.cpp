@@ -4197,7 +4197,9 @@ bool replay_start() {
     menu_init();
     if (!memory_init() || !vma_init(instance_proc())) return false;
     working_set_keep();   // (the game's memory kept in RAM: vk_texture.cpp)
-    if (!mesh_fallback_init()) return false;   // (p4000: our mesh renderer's scratch, before the textures fill the device budget)
+    // (p4000: our mesh renderer's scratch, before the textures fill the device budget. A failure is not the game's: the official
+    // fallback runs instead, decided here, before any program is read or translated)
+    if (!mesh_fallback_init()) mesh_port_abandon("its scratch or argument program could not be made");
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo tsi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
